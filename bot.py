@@ -10,6 +10,8 @@ import zipfile
 import re
 import json
 import sqlite3
+import urllib.request
+import http.client
 from datetime import datetime, timedelta
 import psutil
 import subprocess
@@ -52,6 +54,30 @@ logger = setup_advanced_logging()
 # User navigation tracking states
 user_states = {}
 broadcast_states = {}
+
+# Cached Public IP Address of VPS
+VPS_PUBLIC_IP = "YOUR_VPS_IP"
+
+def resolve_vps_public_ip():
+    """Detect and cache the public IP address of the VPS for building API endpoints"""
+    global VPS_PUBLIC_IP
+    try:
+        # Fast remote resolution using standard utility
+        req = urllib.request.Request("https://api.ipify.org", headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            VPS_PUBLIC_IP = response.read().decode('utf-8').strip()
+            logger.info(f"🌍 VPS Network Routing Active. Resolved Public IP: {VPS_PUBLIC_IP}")
+    except Exception as e:
+        logger.warning(f"⚠️ Remote IP resolution failed: {e}. Attempting local interface fallback...")
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            VPS_PUBLIC_IP = s.getsockname()[0]
+            s.close()
+            logger.info(f"🌍 Fallback Local IP interface detected: {VPS_PUBLIC_IP}")
+        except Exception:
+            VPS_PUBLIC_IP = "127.0.0.1"
 
 # ===== DATABASE STRUCTURAL MIGRATION SAFEGUARDS =====
 def apply_schema_migrations():
@@ -233,8 +259,8 @@ async def run_auto_provisioner_async(bot_obj: Bot):
         await bot_obj.send_message(
             OWNER_ID,
             f"⚙️ <b>VPS AUTO-PROVISIONER INITIATED</b>\n\n"
-            f"<blockquote>The system detected missing dependencies on your VPS: <code>{', '.join(missing)}</code>.\n"
-            f"⏳ Installing components via apt-get in the background...</blockquote>",
+            f"The system detected missing dependencies on your VPS: <code>{', '.join(missing)}</code>.\n"
+            f"⏳ Installing components via apt-get in the background...",
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
@@ -270,7 +296,7 @@ async def run_auto_provisioner_async(bot_obj: Bot):
         await bot_obj.send_message(
             OWNER_ID,
             f"✅ <b>VPS AUTO-PROVISIONING COMPLETE</b>\n\n"
-            f"<blockquote>All requested components (NodeJS, PHP, Composer, SQLite, Unzip) are now installed and ready to use!</blockquote>",
+            f"All requested components (NodeJS, PHP, Composer, SQLite, Unzip) are now installed and ready to use!",
             parse_mode=ParseMode.HTML
         )
         logger.info("✅ System provisioning complete.")
@@ -280,7 +306,7 @@ async def run_auto_provisioner_async(bot_obj: Bot):
             await bot_obj.send_message(
                 OWNER_ID,
                 f"❌ <b>VPS PROVISIONING EXCEPTION CRASH</b>\n\n"
-                f"<blockquote>Error encountered: <code>{html.escape(str(e))}</code></blockquote>",
+                f"Error encountered: <code>{html.escape(str(e))}</code>",
                 parse_mode=ParseMode.HTML
             )
         except:
@@ -317,15 +343,15 @@ def scan_vps_for_foreign_services():
                 # Heuristic scanning signatures for Bots and Web APIs
                 if any(x in cmd_str for x in ["bot.py", "telebot", "discord", "aiogram", "pyrogram", "telegraf", "discord.js", "node-telegram-bot-api"]):
                     is_foreign = True
-                    reason = "Foreign Telegram/Discord Bot"
+                    reason = "Foreign Bot Service"
                     framework = "Node.js" if "node" in cmd_str else "Python"
                 elif any(x in cmd_str for x in ["uvicorn", "gunicorn", "flask", "fastapi", "django", "express", "nodemon", "pm2", "php -s"]):
                     is_foreign = True
-                    reason = "Running Web API Server"
+                    reason = "Web API Server"
                     framework = "PHP" if "php" in cmd_str else "Node.js" if "node" in cmd_str else "Python"
                 elif ("python" in cmd_str or "node" in cmd_str or "php" in cmd_str) and any(x in cmd_str for x in ["api", "server", "app", "main"]):
                     is_foreign = True
-                    reason = "Generic Script (App/API Execution)"
+                    reason = "Generic Executable"
                     framework = "PHP" if "php" in cmd_str else "Node.js" if "node" in cmd_str else "Python"
 
                 if is_foreign:
@@ -423,17 +449,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_new and user_id != OWNER_ID:
             try:
                 alert = (
-                    f"🚨 <b>UNAUTHORIZED REGISTRATION ALERT</b>\n"
-                    f"──────────────────────────────\n"
-                    f"👤 <b>User:</b> {username_display}\n"
-                    f"🆔 <b>ID:</b> <code>{user_id}</code>\n\n"
-                    f"👉 Grant access with command:\n<code>/limit {user_id} [limit]</code>"
+                    f"🚨 <b>UNAUTHORIZED REGISTRATION ALERT</b>\n\n"
+                    f"👤 User: {username_display}\n"
+                    f"🆔 ID: <code>{user_id}</code>\n"
+                    f"Whitelist: <code>/limit {user_id} [limit]</code>"
                 )
                 await context.bot.send_message(OWNER_ID, alert, parse_mode=ParseMode.HTML)
             except Exception as e:
                 logger.error(f"Owner notification failure: {e}")
 
-    # Build Admin navigation with shortened SELF-MGMT title
     buttons = [
         ["🚀 HOST BOT", "📊 MY PROJECTS"],
         ["🖥️ VPS CONTROLS", "⚙️ SELF-MGMT"],
@@ -445,42 +469,37 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     kb = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-    
     promo = (
-        "😈 <b>VPS ORCHESTRATOR & SERVICE MASTER</b>\n"
-        "──────────────────────────────\n"
-        "⚡ <b>Enterprise-Grade Capabilities Active:</b>\n"
-        "<blockquote>"
-        "• Isolated sandboxed runtime environments\n"
-        "• Systemd daemon supervisor integration\n"
-        "• Advanced Direct Bash shell command interface\n"
-        "• Support: Python (.py), Node.js (.js), PHP (.php), HTML (.html)\n"
-        "• Secure hot-updates and fast execution reboots"
-        "</blockquote>\n"
-        "🔒 <b>Whitelisted Admins & Approved Clients Only</b>\n"
-        "👤 <b>Developed by:</b> HmGamer (@EliteHM)"
+        f"😈 <b>VPS ORCHESTRATOR & SERVICE MASTER</b>\n"
+        f"─────────────────────────────\n"
+        f"⚡ <b>Enterprise Capabilities Enabled:</b>\n"
+        f"• Isolated execution sandboxes\n"
+        f"• Live process supervisors & API binding\n"
+        f"• Dynamic terminal command ports\n"
+        f"• Support: Python, Node.js, PHP, HTML\n"
+        f"• Automated cluster state recovery\n\n"
+        f"🔒 Whitelisted Administrators Only\n"
+        f"👤 Developer: HmGamer (@EliteHM)"
     )
             
     await update.message.reply_text(promo, parse_mode=ParseMode.HTML)
     
     if not has_access(user_id):
         await update.message.reply_text(
-            f"❌ <b>Access Denied</b>\n\n"
-            f"Your account must be manually whitelisted by HmGamer.\n"
-            f"🆔 <b>Your ID:</b> <code>{user_id}</code>",
+            f"❌ <b>Access Denied</b>\n"
+            f"Your account must be whitelisted by @EliteHM.\n"
+            f"🆔 Your ID: <code>{user_id}</code>",
             reply_markup=kb, parse_mode=ParseMode.HTML
         )
         return
 
     welcome = (
         f"📊 <b>VPS HOSTING DASHBOARD ACTIVE</b>\n"
-        f"──────────────────────────────\n"
+        f"─────────────────────────────\n"
         f"Welcome back, <b>{username_display}</b>!\n\n"
-        f"📈 <b>Statistics:</b>\n"
-        f"<blockquote>"
-        f"• <b>Account Limit:</b> <code>{get_user_limit(user_id)}</code>\n"
-        f"• <b>Account Class:</b> <code>{'👑 Owner' if user_id == OWNER_ID else '🔧 Admin' if is_admin(user_id) else '✅ Approved Premium Client'}</code>"
-        f"</blockquote>"
+        f"📈 <b>Class Allocation Parameters:</b>\n"
+        f"• Account Limit: <code>{get_user_limit(user_id)}</code>\n"
+        f"• Authorization Level: <code>{'👑 Owner' if user_id == OWNER_ID else '🔧 Admin' if is_admin(user_id) else '✅ Premium Client'}</code>"
     )
               
     await update.message.reply_text(welcome, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -506,21 +525,18 @@ async def bot_host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"🚀 <b>VPS ENVIRONMENT DEPLOYMENT MANAGER</b>\n"
-        f"──────────────────────────────\n"
-        f"Please upload your code as a single file (<code>.py</code>, <code>.js</code>, <code>.php</code>, <code>.html</code>) or a packaged <code>.zip</code> archive.\n\n"
-        f"📋 <b>Requirements by File Type:</b>\n"
-        f"<blockquote>"
-        f"• <b>Python (.py)</b>: Entrypoint script (main.py/bot.py) + requirements list\n"
-        f"• <b>Node.js (.js)</b>: Entrypoint (main.js/index.js) + package requirements\n"
-        f"• <b>PHP (.php)</b>: Runs as web-daemon or CLI worker. Composer supported.\n"
-        f"• <b>Static HTML (.html)</b>: Fast static asset server deployed automatically."
-        f"</blockquote>\n"
-        f"⚙️ <b>Supported Runtimes:</b>\n"
-        f"<blockquote>"
+        f"─────────────────────────────\n"
+        f"Please upload your code as a single script file (<code>.py</code>, <code>.js</code>, <code>.php</code>, <code>.html</code>) or a packaged <code>.zip</code> archive.\n\n"
+        f"📋 <b>Deployment Architectures:</b>\n"
+        f"• <b>Python</b>: main.py/bot.py + requirements\n"
+        f"• <b>Node.js</b>: index.js/main.js + package.json\n"
+        f"• <b>PHP</b>: Direct Web-daemon or CLI worker\n"
+        f"• <b>Static HTML</b>: Deployed automatically\n\n"
+        f"💡 <i>Web APIs (FastAPI, Flask, Express, etc.) will automatically bind to a live VPS port.</i>\n\n"
+        f"⚙️ Supported Runtimes:\n"
         f"{py_versions}"
-        f"• Node.js: {nodejs_info}"
-        f"</blockquote>\n"
-        f"📤 <b>Send the ZIP or code file now:</b>",
+        f"• Node.js: {nodejs_info}\n\n"
+        f"📤 <b>Send your ZIP or code file now:</b>",
         parse_mode=ParseMode.HTML
     )
 
@@ -532,7 +548,7 @@ async def list_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         return
         
     is_admin_flag = is_admin(user_id)
-    PER_PAGE = 10
+    PER_PAGE = 8  # Mobile-optimized rows
     
     with get_db_connection() as conn:
         if is_admin_flag:
@@ -554,24 +570,21 @@ async def list_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await send_response(
             update, 
             f"📁 <b>BOT PORTFOLIO MANAGER</b>\n"
-            f"──────────────────────────────\n"
-            f"<blockquote>"
-            f"• <b>Account Limit:</b> {get_user_limit(user_id)}\n"
-            f"• <b>Deployments:</b> 0"
-            f"</blockquote>\n"
-            f"🚀 Hit <b>'HOST BOT'</b> to load code packages."
+            f"─────────────────────────────\n"
+            f"Account limit: <code>{get_user_limit(user_id)}</code>\n"
+            f"Deployments: <code>0</code>\n\n"
+            f"🚀 Press <b>'HOST BOT'</b> to deploy codes."
         )
         return
 
     header = f"👑 <b>ADMIN SYSTEM CONSOLE BOARD</b>" if is_admin_flag else f"📁 <b>YOUR DEPLOYED SERVICES</b>"
     text = (
         f"{header}\n"
-        f"──────────────────────────────\n"
-        f"Select a project workspace from the list below to access its console, edit environments, or execute terminal commands:\n\n"
+        f"─────────────────────────────\n"
+        f"Select a service workspace below to access its console, change environments, or manage APIs:\n\n"
     )
     
     buttons = []
-    # Render projects as clean, selectable console blocks
     for p in projects:
         running = is_running(p['id'])
         status_emoji = "🟢" if running else "🔴"
@@ -585,11 +598,11 @@ async def list_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if page < total_pages:
         nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"portfolio_page_{page+1}"))
     buttons.append(nav)
+    
     buttons.append([InlineKeyboardButton("🔄 REFRESH PORTFOLIO", callback_data="refresh_projects")])
     
-    # 👑 Main Admin Exclusive VPS Active Service Integration Interface
     if is_admin_flag:
-        buttons.append([InlineKeyboardButton("🔍 SCAN FOR OTHER ACTIVE BOTS / APIs", callback_data="sys_scan_proc")])
+        buttons.append([InlineKeyboardButton("🔍 VPS SECURITY PROCESS SCAN", callback_data="sys_scan_proc")])
         
     await send_response(update, text, reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -609,61 +622,137 @@ async def show_project_console(update: Update, context: ContextTypes.DEFAULT_TYP
         return
         
     running = is_running(project_id)
-    status_label = "🟢 ACTIVE (Running)" if running else "🔴 OFFLINE (Stopped)"
+    status_label = "🟢 ACTIVE" if running else "🔴 OFFLINE"
     
-    # Detailed runtime metadata
     stats_text = ""
     if running:
         info = get_process_info(project_id)
         if info:
             stats_text = (
-                f"💻 <b>Resource Utilization:</b>\n"
-                f"<blockquote>"
-                f"• <b>CPU Usage:</b> <code>{info['cpu_percent']:.1f}%</code>\n"
-                f"• <b>RAM Usage:</b> <code>{info['memory_mb']:.1f} MB</code>\n"
-                f"• <b>Process PID:</b> <code>{info['pid']}</code>"
-                f"</blockquote>\n"
+                f"📈 <b>Resource Allotment:</b>\n"
+                f"• CPU Load: <code>{info['cpu_percent']:.1f}%</code>\n"
+                f"• Memory RSS: <code>{info['memory_mb']:.1f} MB</code>\n"
+                f"• Target PID: <code>{info['pid']}</code>\n"
             )
                          
-    port_text = f"<code>{proj['port']}</code>" if proj['port'] else "N/A"
-    
+    # Render API routing parameters if port configured
+    api_endpoint_text = ""
+    if proj['port']:
+        api_endpoint_text = f"🌐 <b>API Route:</b> <code>http://{VPS_PUBLIC_IP}:{proj['port']}</code>\n"
+    else:
+        api_endpoint_text = f"🌐 <b>API Route:</b> <code>Inactive/No Port Bound</code>\n"
+        
     console_view = (
         f"📦 <b>CLOUD WORKSPACE CONSOLE</b>\n"
-        f"┌──────────────────────────────┐\n"
-        f"  <b>Service:</b> <code>{proj['project_name']}</code>\n"
-        f"  <b>Workspace ID:</b> <code>{proj['id']}</code>\n"
-        f"  <b>Status:</b> {status_label}\n"
-        f"  <b>Engine Type:</b> <code>{proj['framework']}</code>\n"
-        f"  <b>Port Binding:</b> <code>{port_text}</code>\n"
-        f"  <b>Last Launched:</b> <code>{proj['last_started'] or 'Never'}</code>\n"
-        f"└──────────────────────────────┘\n\n"
+        f"─────────────────────────────\n"
+        f"• Service: <b>{proj['project_name']}</b>\n"
+        f"• Status: <b>{status_label}</b>\n"
+        f"• Architecture: <code>{proj['framework']}</code>\n"
+        f"{api_endpoint_text}"
+        f"• Last Booted: <code>{proj['last_started'] or 'Never'}</code>\n\n"
         f"{stats_text}"
+        f"─────────────────────────────\n"
         f"👉 <b>Choose Console Operation:</b>"
     )
     
+    # Restructured clean layout optimized for mobile screens (maximum 2 buttons per row)
     buttons = [
         [
-            InlineKeyboardButton("⏹️ STOP WORKER" if running else "▶️ START WORKER", callback_data=f"pstate_{project_id}"),
+            InlineKeyboardButton("⏹️ STOP PROCESS" if running else "▶️ BOOT WORKER", callback_data=f"pstate_{project_id}"),
             InlineKeyboardButton("🔐 ENV VARS", callback_data=f"p_env_{project_id}")
         ],
         [
-            InlineKeyboardButton("🖥️ WORKSPACE CLI", callback_data=f"p_cli_{project_id}"),
-            InlineKeyboardButton("📋 LIVE LOGS", callback_data=f"p_logs_{project_id}")
+            InlineKeyboardButton("💻 WORKSPACE CLI", callback_data=f"p_cli_{project_id}"),
+            InlineKeyboardButton("📋 RUNNER LOGS", callback_data=f"p_logs_{project_id}")
         ],
         [
-            InlineKeyboardButton("🧹 AUTO BUILD", callback_data=f"p_build_{project_id}"),
+            InlineKeyboardButton("📦 PKG MANAGER", callback_data=f"p_pkg_{project_id}"),
+            InlineKeyboardButton("🌐 PORT / API BIND", callback_data=f"p_api_bind_{project_id}")
+        ],
+        [
+            InlineKeyboardButton("🧹 DEPS REBUILD", callback_data=f"p_build_{project_id}"),
             InlineKeyboardButton("🗑️ PURGE WORKSPACE", callback_data=f"p_purge_{project_id}")
         ],
-        [InlineKeyboardButton("🔙 BACK TO PORTFOLIO", callback_data="refresh_projects")]
+        [InlineKeyboardButton("🔙 RETURN TO PORTFOLIO", callback_data="refresh_projects")]
     ]
     
     await send_response(update, console_view, reply_markup=InlineKeyboardMarkup(buttons))
 
+async def run_internal_api_ping(port):
+    """Diagnose HTTP endpoint bind internally using python standard libraries"""
+    start_time = time.time()
+    try:
+        # Resolve request pathways natively using python's built-in http.client 
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        latency = (time.time() - start_time) * 1000
+        status = resp.status
+        headers = dict(resp.getheaders())
+        server_engine = headers.get("Server", headers.get("server", "Python/Node Web Application"))
+        conn.close()
+        
+        return (
+            f"✅ <b>API ENDPOINT TEST SUCCESSFUL!</b>\n"
+            f"─────────────────────────────\n"
+            f"• <b>Status Code:</b> <code>{status}</code>\n"
+            f"• <b>Round-Trip Latency:</b> <code>{latency:.1f} ms</code>\n"
+            f"• <b>Reported Server Engine:</b> <code>{server_engine}</code>\n\n"
+            f"🚀 <i>Your API is successfully running and binded to all local interfaces!</i>"
+        )
+    except Exception as e:
+        return (
+            f"⚠️ <b>API PORT DIAGNOSTIC FAILURE</b>\n"
+            f"─────────────────────────────\n"
+            f"• <b>Error:</b> <code>{html.escape(str(e))}</code>\n\n"
+            f"💡 <i>Check if your code listens on <b>0.0.0.0</b>, uses the dynamic environment variable <b>PORT</b>, or is experiencing runtime crashes. Check live logs for debugging.</i>"
+        )
+
+async def render_api_bind_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, project_id: int):
+    """Dedicated management panel for API endpoints, ports, and internal routing configs"""
+    user_id = update.effective_user.id if update.effective_user else update.callback_query.from_user.id
+    
+    with get_db_connection() as conn:
+        proj_row = conn.execute("SELECT * VALUES FROM projects WHERE id = ?", (project_id,)).fetchone()
+        
+    if not proj_row:
+        await send_response(update, "❌ Project details unavailable.")
+        return
+        
+    proj = dict(proj_row)
+    port_text = f"<code>{proj['port']}</code>" if proj['port'] else "<i>None Bound (Local CLI only)</i>"
+    url_text = f"<code>http://{VPS_PUBLIC_IP}:{proj['port']}</code>" if proj['port'] else "<i>Inactive</i>"
+    
+    panel_view = (
+        f"🌐 <b>WEB API SERVICE & PORT BINDING</b>\n"
+        f"─────────────────────────────\n"
+        f"• Project Name: <b>{proj['project_name']}</b>\n"
+        f"• Running Port: {port_text}\n"
+        f"• API Live URL: {url_text}\n\n"
+        f"💡 <i>Web service frameworks must run server connections utilizing the dynamic PORT env variable.</i>\n\n"
+        f"👉 <b>Choose API Endpoint Action:</b>"
+    )
+    
+    buttons = []
+    # If a port is bound, provide direct connection test options
+    if proj['port']:
+        buttons.append([InlineKeyboardButton("⚡ TEST ACTIVE ENDPOINT", callback_data=f"api_test_{project_id}")])
+        
+    buttons.append([
+        InlineKeyboardButton("✏️ DEFINE PORT", callback_data=f"api_setport_{project_id}"),
+        InlineKeyboardButton("🔄 AUTO-ASSIGN", callback_data=f"api_autoport_{project_id}")
+    ])
+    
+    if proj['port']:
+        buttons.append([InlineKeyboardButton("❌ DISABLE PORT BINDING", callback_data=f"api_disable_{project_id}")])
+        
+    buttons.append([InlineKeyboardButton("🔙 BACK TO CONSOLE", callback_data=f"viewproj_{project_id}")])
+    
+    await send_response(update, panel_view, reply_markup=InlineKeyboardMarkup(buttons))
+
 # ===== EXECUTOR LAUNCH PIPELINE WITH MULTI-LANGUAGE DEPS =====
 def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
     """Robust dynamic worker loader launching environments and installing missing modules with in-place edits"""
-    
-    # Read the project details securely
     with get_db_connection() as conn:
         fresh = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     if not fresh: return
@@ -676,13 +765,12 @@ def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
     main_file = project['main_file']
     
     current_status = [
-        f"✅ <b>WORKSPACE INITIALIZED SUCCESSFULLY!</b>\n",
-        f"┌──────────────────────────────┐",
-        f"  <b>Project Name:</b> <code>{p_name}</code>",
-        f"  <b>Engine Class:</b> <code>{framework}</code>",
-        f"  <b>Entry Launch:</b> <code>{main_file}</code>",
-        f"└──────────────────────────────┘\n",
-        f"⏳ <b>Live Deployment Progress:</b>"
+        f"✅ <b>WORKSPACE CONFIGURED!</b>\n",
+        f"• Name: <code>{p_name}</code>",
+        f"• Framework: <code>{framework}</code>",
+        f"• Entrypoint: <code>{main_file}</code>",
+        f"─────────────────────────────",
+        f"⏳ <b>Deployment Status:</b>"
     ]
     
     def update_status(new_line):
@@ -704,11 +792,13 @@ def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
             logger.error(f"Status update failed: {e}")
 
     try:
-        # Configure env variables safely
         env = os.environ.copy()
         env['BOT_HOSTING_PLATFORM'] = 'True'
         if 'BOT_TOKEN' in env: env.pop('BOT_TOKEN')
-        if project['port']: env['PORT'] = str(project['port'])
+        # Map port binding to system-level port variables
+        if project['port']: 
+            env['PORT'] = str(project['port'])
+            env['HOST'] = '0.0.0.0'
         
         try:
             user_env_data = json.loads(project.get('env_vars', '{}'))
@@ -717,20 +807,14 @@ def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
         except Exception as e:
             logger.warning(f"Failed loading env variables for {p_name}: {e}")
         
-        # Multi-Language Automated Dependency Builder
         if not project['deps_installed']:
-            update_status("System analyzing packages & triggering automated dependency builder...")
-            
-            # --- ADVANCED DYNAMIC CODE RECONNAISSANCE SCANNER ---
+            update_status("Running security dependency scan...")
             auto_packages_to_install = []
             if project['framework'] == "Python":
-                logger.info(f"Scanning Python code imports dynamically for {p_name}...")
                 auto_packages_to_install = parse_python_imports(p_dir)
             elif project['framework'] == "Node.js":
-                logger.info(f"Scanning Node.js code imports dynamically for {p_name}...")
                 auto_packages_to_install = parse_nodejs_imports(p_dir)
                 
-            # 1. Node.js Runtimes
             if project['framework'] == "Node.js":
                 p_json_path = os.path.join(p_dir, 'package.json')
                 p_json_packages = set()
@@ -749,55 +833,40 @@ def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
                 else:
                     p_json_packages = parse_package_json_packages(p_json_path)
 
-                update_status("Running npm installation sequences...")
+                update_status("Executing production npm installs...")
                 try:
                     res = subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=p_dir, capture_output=True, text=True, timeout=300)
-                    if res.returncode == 0:
-                        update_status("Original package.json dependencies resolved.")
-                    else:
-                        logger.warning(f"npm install alert: {res.stderr}")
                 except Exception as e:
-                    update_status(f"⚠️ npm installation warning: {e}")
+                    update_status(f"⚠️ Installation alert: {e}")
                 
-                filtered_auto = []
-                for pkg in auto_packages_to_install:
-                    if pkg.lower() not in p_json_packages:
-                        filtered_auto.append(pkg)
-                
+                filtered_auto = [pkg for pkg in auto_packages_to_install if pkg.lower() not in p_json_packages]
                 if filtered_auto:
-                    update_status(f"Detected <code>{len(filtered_auto)}</code> unlisted imported NodeJS modules: <code>{', '.join(filtered_auto)}</code>")
-                    update_status("Installing scanned NodeJS imports...")
+                    update_status(f"Resolving {len(filtered_auto)} system modules...")
                     try:
                         npm_args = ["npm", "install", "--no-audit", "--no-fund", "--save"] + filtered_auto
                         subprocess.run(npm_args, cwd=p_dir, capture_output=True, text=True, timeout=300)
-                        update_status("Successfully pre-installed scanned NodeJS imports.")
                     except Exception as e:
-                        logger.error(f"Dynamic Node dependency pre-installation failed: {e}")
+                        logger.error(f"Dynamic Node dependency installation failed: {e}")
                     
-            # 2. PHP Composer Support
             elif project['framework'] == "PHP" and os.path.exists(os.path.join(p_dir, 'composer.json')):
-                update_status("Running Composer workspace installation patterns...")
+                update_status("Initializing Composer runtimes...")
                 try:
-                    res = subprocess.run(["composer", "install", "--no-interaction", "--ignore-platform-reqs"], cwd=p_dir, capture_output=True, text=True, timeout=300)
-                    if res.returncode == 0:
-                        update_status("Composer resolved dependencies successfully.")
+                    subprocess.run(["composer", "install", "--no-interaction", "--ignore-platform-reqs"], cwd=p_dir, capture_output=True, text=True, timeout=300)
                 except Exception as e:
-                    update_status(f"⚠️ Composer launcher omitted: {e}")
+                    update_status(f"⚠️ Composer warning: {e}")
                     
-            # 3. Python Virtualenv installs
             elif project['framework'] == "Python":
                 req_file = find_requirements_txt(p_dir)
                 req_packages = set()
                 if req_file:
                     req_packages = parse_requirements_txt_packages(req_file)
-                    update_status("Building PyPI dependencies from requirements.txt...")
+                    update_status("Resolving requirements.txt...")
                     try:
                         res = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file], capture_output=True, text=True, timeout=300)
                         if res.returncode != 0:
                             subprocess.run(["pip3", "install", "-r", req_file], timeout=300)
-                        update_status("requirements.txt dependencies resolved.")
                     except Exception as e:
-                        update_status(f"⚠️ pip installation wrapper warning: {e}")
+                        update_status(f"⚠️ pip installation warning: {e}")
                 
                 filtered_auto = []
                 for pkg in auto_packages_to_install:
@@ -806,31 +875,24 @@ def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
                         filtered_auto.append(pkg)
                 
                 if filtered_auto:
-                    update_status(f"Detected <code>{len(filtered_auto)}</code> unlisted imported Python modules: <code>{', '.join(filtered_auto)}</code>")
-                    update_status("Pre-installing scanned Python imports...")
+                    update_status(f"Installing missing requirements...")
                     try:
                         pip_args = [sys.executable, "-m", "pip", "install"] + filtered_auto
                         subprocess.run(pip_args, capture_output=True, text=True, timeout=300)
-                        update_status("Successfully pre-installed scanned Python imports.")
                     except Exception as e:
                         try:
                             pip3_args = ["pip3", "install"] + filtered_auto
                             subprocess.run(pip3_args, capture_output=True, text=True, timeout=300)
-                            update_status("Successfully pre-installed scanned Python imports (fallback).")
                         except Exception as ex:
-                            logger.error(f"Dynamic Python dependency pre-installation failed: {ex}")
+                            logger.error(f"Dynamic Python dependencies warning: {ex}")
                         
-            # Set deployment dependencies as loaded
             with get_db_connection() as conn:
                 conn.execute("UPDATE projects SET deps_installed = 1 WHERE id = ?", (project_id,))
                 conn.commit()
 
-        # Generate Launcher Commands based on engine architectures
         cmd_args = None
-        
         if project['framework'] == "Python":
             cmd_args = [sys.executable, "-u", main_file]
-            
         elif project['framework'] == "Node.js":
             p_json_path = os.path.join(p_dir, "package.json")
             has_start = False
@@ -846,23 +908,21 @@ def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
                 cmd_args = ["npm", "start"]
             else:
                 cmd_args = ["node", main_file]
-                
         elif project['framework'] == "PHP":
             if project['port']:
                 cmd_args = ["php", "-S", f"0.0.0.0:{project['port']}", "-t", "."]
             else:
                 cmd_args = ["php", main_file]
-                
         elif project['framework'] == "Static HTML":
             cmd_args = ["python3", "-m", "http.server", str(project['port'])]
 
         if not cmd_args:
-            update_status("❌ Launch command configuration could not be generated.")
+            update_status("❌ Launcher command configurations missing.")
             return
             
-        update_status("Spawning worker runner instance...")
+        update_status("Spawning operational thread...")
         with open(log_file, 'a') as lf:
-            lf.write(f"\n=== LAUNCH WORKER ACTIVE AT {datetime.now()} ===\n")
+            lf.write(f"\n=== WORKSPACE INITIALIZED AT {datetime.now()} ===\n")
             lf.write(f"Launch command: {' '.join(cmd_args)}\n")
             proc = subprocess.Popen(
                 cmd_args, cwd=p_dir, stdout=lf, stderr=lf, env=env
@@ -874,16 +934,15 @@ def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
             conn.execute("INSERT OR REPLACE INTO process_monitoring (project_id, pid, start_time) VALUES (?, ?, CURRENT_TIMESTAMP)", (project_id, proc.pid))
             conn.commit()
             
-        update_status(f"🟢 <b>Process active & monitoring!</b> (PID: {proc.pid})")
+        update_status(f"🟢 <b>Process operational</b> (PID: {proc.pid})")
     except Exception as e:
         logger.error(f"Sandbox runner spawning crashed: {e}", exc_info=True)
-        update_status(f"❌ Launcher engine breakdown: {e}")
+        update_status(f"❌ Initialization breakdown: {e}")
 
 # ===== DEPLOYMENT HANDLERS WITH ALL-LANGUAGE & SINGLE FILE SUPPORT =====
 async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # Handle direct codebase upgrades of the host orchestrator itself via ZIP upload
     if user_id in user_states and user_states[user_id].get("awaiting_self_update_zip"):
         if not is_admin(user_id): return
         doc = update.message.document
@@ -935,7 +994,7 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         is_single = filename_lower.endswith(('.py', '.js', '.ts', '.php', '.html', '.htm'))
         
         if not (is_zip or is_single):
-            await p_msg.edit_text("❌ Package format rejected. Please send a `.zip` archive or a single code file (<code>.py</code>, <code>.js</code>, <code>.php</code>, <code>.html</code>).", parse_mode=ParseMode.HTML)
+            await p_msg.edit_text("❌ Format rejected. Please upload a `.zip` archive or a single code file (<code>.py</code>, <code>.js</code>, <code>.php</code>, <code>.html</code>).", parse_mode=ParseMode.HTML)
             return
 
         base_name, ext = os.path.splitext(doc.file_name)
@@ -959,17 +1018,16 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             main_file = find_main_file(extract_dir)
             if not main_file:
                 shutil.rmtree(extract_dir, ignore_errors=True)
-                await p_msg.edit_text("❌ Launch configuration main entrypoint file absent. Please verify script entrypoint files exist.")
+                await p_msg.edit_text("❌ Entry point launcher missing in root directories.")
                 return
         else:
             file_dest_path = os.path.join(extract_dir, doc.file_name)
             await tg_file.download_to_drive(file_dest_path)
             main_file = doc.file_name
             
-            # Ensure proper scaffolding environment configurations
             if ext.lower() == '.py':
                 with open(os.path.join(extract_dir, "requirements.txt"), "w") as f:
-                    f.write("# Auto-generated for single script deployment\n")
+                    f.write("# Generated requirements file\n")
             elif ext.lower() in ('.js', '.ts'):
                 p_json_content = {
                     "name": p_name.lower(),
@@ -991,14 +1049,18 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         framework = "Unknown"
         port = None
         
+        # Determine frameworks and auto-allocate API ports if web scripts detected
         if main_file.endswith('.py'):
             framework = "Python"
+            if any(x in types for x in ["flask", "fastapi", "django"]):
+                port = find_available_port()
         elif main_file.endswith(('.js', '.ts')):
             framework = "Node.js"
+            if any(x in types for x in ["express", "nodejs"]):
+                port = find_available_port()
         elif main_file.endswith('.php'):
             framework = "PHP"
-            if os.path.exists(os.path.join(dest_dir, "index.php")) or "index" in main_file or is_single:
-                port = find_available_port()
+            port = find_available_port()
         elif main_file.endswith(('.html', '.htm')):
             framework = "Static HTML"
             port = find_available_port()
@@ -1033,12 +1095,10 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             
         await p_msg.edit_text(
             f"✅ <b>WORKSPACE INITIALIZED SUCCESSFULLY!</b>\n\n"
-            f"<blockquote>"
-            f"• <b>Project Name:</b> <code>{p_name}</code>\n"
-            f"• <b>Engine Class:</b> <code>{framework}</code>\n"
-            f"• <b>Entry Launch File:</b> <code>{main_file}</code>"
-            f"</blockquote>\n"
-            f"⚙️ Running dependency builder & launching worker process safely..."
+            f"• Name: <code>{p_name}</code>\n"
+            f"• Framework: <code>{framework}</code>\n"
+            f"• Launchpoint: <code>{main_file}</code>\n\n"
+            f"⚙️ Resolving environment setups & dependencies..."
         )
         
         loop = asyncio.get_running_loop()
@@ -1075,52 +1135,47 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         await show_project_console(update, context, p_id)
         return
         
-    # Process scan triggers for other host-level bots and active APIs
+    # PROCESS SECURITY ACTION CALLBACKS
     if data == "sys_scan_proc":
         if not is_admin(user_id): return
-        p_msg = await context.bot.send_message(query.message.chat.id, "🔍 <i>Deep-scanning host memory spaces for foreign services and listening APIs...</i>", parse_mode=ParseMode.HTML)
+        p_msg = await context.bot.send_message(query.message.chat.id, "🔍 <i>Scanning RAM spaces for active processes and listening ports...</i>", parse_mode=ParseMode.HTML)
         discovered = scan_vps_for_foreign_services()
         
         if not discovered:
-            await p_msg.edit_text("✅ <b>Scan Complete:</b> No external bots or active APIs detected.")
+            await p_msg.edit_text("✅ <b>No foreign APIs or active services detected.</b>")
             return
             
-        report = f"🔍 <b>VPS ALIEN SERVICE REPORT ({len(discovered)} Found)</b>\n\n"
+        report = f"🔍 <b>VPS FOREIGN APIS REPORT ({len(discovered)})</b>\n\n"
         buttons = []
         
         for d in discovered:
             report += (
                 f"⚙️ <b>PID:</b> <code>{d['real_pid']}</code>\n"
-                f"<blockquote>"
-                f"• <b>Class:</b> {d['project_type']}\n"
-                f"• <b>Command:</b> <code>{html.escape(d['cmdline'][:100])}</code>\n"
-                f"• <b>Active Port:</b> <code>{d['port'] or 'N/A'}</code>"
-                f"</blockquote>\n"
+                f"• Class: <code>{d['project_type']}</code>\n"
+                f"• Target command: <code>{html.escape(d['cmdline'][:60])}...</code>\n"
+                f"• Bound Port: <code>{d['port'] or 'N/A'}</code>\n\n"
             )
-                      
             buttons.append([
                 InlineKeyboardButton(f"🚨 KILL PID {d['real_pid']}", callback_data=f"killproc_{d['real_pid']}"),
-                InlineKeyboardButton(f"📥 REGISTER", callback_data=f"regproc_{d['real_pid']}")
+                InlineKeyboardButton(f"📥 ADOPT", callback_data=f"regproc_{d['real_pid']}")
             ])
             
-        buttons.append([InlineKeyboardButton("🔙 BACK TO PORTFOLIO", callback_data="refresh_projects")])
+        buttons.append([InlineKeyboardButton("🔙 RETURN TO SERVICES", callback_data="refresh_projects")])
         await p_msg.delete()
         await context.bot.send_message(query.message.chat.id, report, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.HTML)
         return
 
-    # Process direct manual termination of external discovered PIDs
     if data.startswith("killproc_"):
         if not is_admin(user_id): return
         target_pid = int(data.split("_")[1])
         try:
             parent = psutil.Process(target_pid)
             parent.kill()
-            await context.bot.send_message(query.message.chat.id, f"✅ <b>Process {target_pid} terminated successfully.</b>", parse_mode=ParseMode.HTML)
+            await context.bot.send_message(query.message.chat.id, f"✅ <b>Process {target_pid} terminated.</b>", parse_mode=ParseMode.HTML)
         except Exception as e:
-            await context.bot.send_message(query.message.chat.id, f"❌ Failed to kill process {target_pid}: {e}", parse_mode=ParseMode.HTML)
+            await context.bot.send_message(query.message.chat.id, f"❌ Failed to close process {target_pid}: {e}", parse_mode=ParseMode.HTML)
         return
 
-    # Process dynamic registration of discovered external systems
     if data.startswith("regproc_"):
         if not is_admin(user_id): return
         target_pid = int(data.split("_")[1])
@@ -1128,7 +1183,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             proc = psutil.Process(target_pid)
             cmdline = proc.cmdline()
             cmd_str = " ".join(cmdline)
-            cwd = proc.cwd()
             
             p_name = f"IMPORTED_{target_pid}"
             main_file = cmdline[-1] if len(cmdline) > 0 else "main.py"
@@ -1138,21 +1192,97 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 cursor = conn.execute("""
                     INSERT INTO projects (user_id, project_name, main_file, framework, project_type, status, deps_installed)
                     VALUES (?, ?, ?, ?, ?, 'running', 1)
-                """, (OWNER_ID, p_name, main_file, framework, "Imported Service"))
+                """, (OWNER_ID, p_name, main_file, framework, "Imported Daemon"))
                 project_id = cursor.lastrowid
                 conn.commit()
                 
-            # Bind running state mapping locally
             running_processes[project_id] = target_pid
-            
-            await context.bot.send_message(query.message.chat.id, f"✅ <b>Imported successfully!</b> Project registered under name <code>{p_name}</code>.", parse_mode=ParseMode.HTML)
+            await context.bot.send_message(query.message.chat.id, f"✅ Registered under <code>{p_name}</code>.", parse_mode=ParseMode.HTML)
         except Exception as e:
-            await context.bot.send_message(query.message.chat.id, f"❌ Failed to import process: {e}", parse_mode=ParseMode.HTML)
+            await context.bot.send_message(query.message.chat.id, f"❌ Failed to import process space: {e}", parse_mode=ParseMode.HTML)
         return
 
-    # Project Dashboard Console Callback Actions
+    # PACKAGE MANAGER CALLBACK IMPLEMENTATIONS
+    if data.startswith("p_pkg_"):
+        p_id = int(data.split("_")[2])
+        await render_package_manager(update, context, p_id)
+        return
+    elif data.startswith("pkg_add_"):
+        p_id = int(data.split("_")[2])
+        user_states[user_id] = {"awaiting_pkg_install": True, "project_id": p_id}
+        await context.bot.send_message(
+            query.message.chat.id,
+            f"📥 <b>INSTALL OR SPECIFY VERSION</b>\n"
+            f"─────────────────────────────\n"
+            f"Send the package name and target version lock to install or update.\n\n"
+            f"• Python Format: <code>package_name==version</code>\n"
+            f"• Node.js Format: <code>package_name@version</code>\n\n"
+            f"👉 <i>Example:</i> <code>pyrogram==2.0.106</code> or <code>express@4.19.2</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    elif data.startswith("pkg_del_"):
+        p_id = int(data.split("_")[2])
+        user_states[user_id] = {"awaiting_pkg_uninstall": True, "project_id": p_id}
+        await context.bot.send_message(
+            query.message.chat.id,
+            f"➖ <b>UNINSTALL PACKAGE</b>\n"
+            f"─────────────────────────────\n"
+            f"Send the exact name of the package you wish to uninstall.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # API BINDING SUITE ACTIONS
+    if data.startswith("p_api_bind_"):
+        p_id = int(data.split("_")[3])
+        await render_api_bind_panel(update, context, p_id)
+        return
+    elif data.startswith("api_test_"):
+        p_id = int(data.split("_")[2])
+        with get_db_connection() as conn:
+            proj = conn.execute("SELECT port FROM projects WHERE id = ?", (p_id,)).fetchone()
+        if proj and proj['port']:
+            diagnostic_msg = await run_internal_api_ping(proj['port'])
+            await context.bot.send_message(query.message.chat.id, diagnostic_msg, parse_mode=ParseMode.HTML)
+        else:
+            await query.answer("❌ No active port allocated to project.", show_alert=True)
+        return
+    elif data.startswith("api_setport_"):
+        p_id = int(data.split("_")[2])
+        user_states[user_id] = {"awaiting_custom_port": True, "project_id": p_id}
+        await context.bot.send_message(
+            query.message.chat.id,
+            "✏️ <b>SPECIFY CUSTOM BINDING PORT</b>\n"
+            "─────────────────────────────\n"
+            "Send an unused port number (between 1024 and 65535) to bind to this service workspace.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    elif data.startswith("api_autoport_"):
+        p_id = int(data.split("_")[2])
+        free_port = find_available_port()
+        if free_port:
+            with get_db_connection() as conn:
+                conn.execute("UPDATE projects SET port = ? WHERE id = ?", (free_port, p_id))
+                conn.commit()
+            await query.answer(f"🔄 Auto-allocated Port: {free_port}", show_alert=True)
+            await render_api_bind_panel(update, context, p_id)
+        else:
+            await query.answer("❌ No free network ports available on VPS host.", show_alert=True)
+        return
+    elif data.startswith("api_disable_"):
+        p_id = int(data.split("_")[2])
+        with get_db_connection() as conn:
+            conn.execute("UPDATE projects SET port = NULL WHERE id = ?", (p_id,))
+            conn.commit()
+        await query.answer("❌ Port binding disabled successfully.")
+        await render_api_bind_panel(update, context, p_id)
+        return
+
+    # MAIN WORKSPACE CALLBACK HANDLERS
     if data.startswith(("pstate_", "p_env_", "p_cli_", "p_logs_", "p_build_", "p_purge_")):
-        action, p_id_str = data.rsplit("_", 1)  # Fix: rsplit allows tags with standard underscores to parse correctly
+        action, p_id_str = data.rsplit("_", 1)
         p_id = int(p_id_str)
         
         with get_db_connection() as conn:
@@ -1167,7 +1297,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             running = is_running(p_id)
             if running:
                 stop_process(p_id)
-                await query.answer(f"⏹️ Project {proj['project_name']} stopped successfully.")
+                await query.answer(f"⏹️ Service {proj['project_name']} stopped.")
             else:
                 status_msg = await context.bot.send_message(
                     query.message.chat.id, 
@@ -1187,9 +1317,9 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             await context.bot.send_message(
                 query.message.chat.id,
                 f"⚙️ <b>CONFIGURING ENV FOR: {proj['project_name']}</b>\n"
-                f"──────────────────────────────\n"
-                f"Please send the environment variables in a valid JSON schema layout. Example:\n"
-                f"<pre>{{\n  \"DATABASE_URL\": \"sqlite://...\",\n  \"PORT\": \"8080\"\n}}</pre>",
+                f"─────────────────────────────\n"
+                f"Please send the environment variables in a valid JSON scheme layout.\n\n"
+                f"👉 <code>{{\"BOT_TOKEN\": \"xyz\", \"PORT\": \"8080\"}}</code>",
                 parse_mode=ParseMode.HTML
             )
             return
@@ -1200,10 +1330,9 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             await context.bot.send_message(
                 query.message.chat.id,
                 f"🖥️ <b>VIRTUAL WORKSPACE CLI TERMINAL ACTIVE</b>\n"
-                f"──────────────────────────────\n"
-                f"📂 <b>Workspace Target Path:</b>\n<code>{p_dir}</code>\n\n"
-                f"You can now directly execute contextual folder commands (e.g., <code>ls -la</code>, <code>npm run build</code>, <code>composer update</code>):\n"
-                f"👉 Send <code>exit</code> to terminate subshell.",
+                f"─────────────────────────────\n"
+                f"📂 Folder Path: <code>{p_dir}</code>\n\n"
+                f"Execute commands inside this workspace context. Send <code>exit</code> to terminate the shell.",
                 parse_mode=ParseMode.HTML
             )
             return
@@ -1215,7 +1344,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                     logs_data = f.read()[-3000:]
                 await query.message.reply_text(
                     f"📋 <b>Runner Logs for {proj['project_name']}:</b>\n"
-                    f"──────────────────────────────\n"
+                    f"─────────────────────────────\n"
                     f"<pre>{html.escape(logs_data)}</pre>", 
                     parse_mode=ParseMode.HTML
                 )
@@ -1257,12 +1386,71 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             await list_bots_command(update, context)
             return
 
-        # Return back into project console automatically
         await asyncio.sleep(1.2)
         try:
             await show_project_console(update, context, p_id)
         except Exception:
             pass
+
+# ===== DYNAMIC REQUIREMENTS & VERSION MANAGER PANEL =====
+async def render_package_manager(update: Update, context: ContextTypes.DEFAULT_TYPE, project_id: int):
+    """Dynamic package list view and modification panel"""
+    user_id = update.effective_user.id if update.effective_user else update.callback_query.from_user.id
+    
+    with get_db_connection() as conn:
+        proj_row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not proj_row: return
+    
+    proj = dict(proj_row)
+    p_dir = project_folder(proj['user_id'], proj['project_name'])
+    framework = proj['framework']
+    
+    pkg_list = ""
+    if framework == "Python":
+        req_file = find_requirements_txt(p_dir)
+        if req_file and os.path.exists(req_file):
+            try:
+                with open(req_file, "r") as f:
+                    lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                pkg_list = "\n".join([f"• <code>{html.escape(l)}</code>" for l in lines]) if lines else "<i>(None listed)</i>"
+            except Exception as e:
+                pkg_list = f"<i>Error reading packages: {e}</i>"
+        else:
+            pkg_list = "<i>No requirements.txt found</i>"
+            
+    elif framework == "Node.js":
+        p_json_path = os.path.join(p_dir, 'package.json')
+        if os.path.exists(p_json_path):
+            try:
+                with open(p_json_path, "r") as f:
+                    data = json.load(f)
+                deps = data.get("dependencies", {})
+                pkg_list = "\n".join([f"• <code>{html.escape(k)}@{html.escape(str(v))}</code>" for k, v in deps.items()]) if deps else "<i>(None listed)</i>"
+            except Exception as e:
+                pkg_list = f"<i>Error reading package.json: {e}</i>"
+        else:
+            pkg_list = "<i>No package.json found</i>"
+    else:
+        pkg_list = "<i>Package management only supported for Python/Node.js</i>"
+
+    manager_text = (
+        f"📦 <b>WORKSPACE PACKAGE MANAGER</b>\n"
+        f"─────────────────────────────\n"
+        f"🛠️ Service: <b>{proj['project_name']}</b>\n"
+        f"📚 Framework Class: <code>{framework}</code>\n\n"
+        f"📋 <b>Identified Dependencies:</b>\n"
+        f"{pkg_list}\n\n"
+        f"👉 <b>Choose Package Operation:</b>"
+    )
+    
+    buttons = [
+        [
+            InlineKeyboardButton("➕ ADD / LOCK VERSION", callback_data=f"pkg_add_{project_id}"),
+            InlineKeyboardButton("➖ REMOVE PACKAGE", callback_data=f"pkg_del_{project_id}")
+        ],
+        [InlineKeyboardButton("🔙 BACK TO CONSOLE", callback_data=f"viewproj_{project_id}")]
+    ]
+    await send_response(update, manager_text, reply_markup=InlineKeyboardMarkup(buttons))
 
 # ===== VPS CONTROLS & DAEMON INTERFACES =====
 async def systemd_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1276,7 +1464,7 @@ async def systemd_action_handler(update: Update, context: ContextTypes.DEFAULT_T
     ok, response = manage_systemd_unit(service, action)
     output = (
         f"🗳️ <b>SYSTEMD OPERATION OUTPUT:</b>\n"
-        f"──────────────────────────────\n"
+        f"─────────────────────────────\n"
         f"<pre>{html.escape(response or '')}</pre>"
     )
     await update.message.reply_text(output, parse_mode=ParseMode.HTML)
@@ -1287,7 +1475,7 @@ async def exec_shell_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states[user_id] = {"awaiting_shell_cmd": True}
     await update.message.reply_text(
         "💻 <b>VPS DIRECT BASH SHELL TERMINAL ACTIVE</b>\n"
-        "──────────────────────────────\n"
+        "─────────────────────────────\n"
         "Send any bash command to execute it directly on the host VPS system root workspace.\n"
         "👉 Send <code>exit</code> to terminate shell terminal.",
         parse_mode=ParseMode.HTML
@@ -1304,7 +1492,7 @@ async def self_management_panel(update: Update, context: ContextTypes.DEFAULT_TY
     ]
     await update.message.reply_text(
         "⚙️ <b>BOT SELF-MANAGEMENT CONTROL PANEL</b>\n"
-        "──────────────────────────────\n"
+        "─────────────────────────────\n"
         "Deploy, upgrade, and rebuild the orchestrator engine directly:",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode=ParseMode.HTML
@@ -1350,7 +1538,7 @@ async def bot_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log_data = f.read()[-3000:]
         await update.message.reply_text(
             f"📋 <b>Bot Core Host Logs:</b>\n"
-            f"──────────────────────────────\n"
+            f"─────────────────────────────\n"
             f"<pre>{html.escape(log_data)}</pre>",
             parse_mode=ParseMode.HTML
         )
@@ -1375,24 +1563,18 @@ async def system_status_command(update: Update, context: ContextTypes.DEFAULT_TY
     
     status_text = (
         f"🖥️ <b>VPS CORE SYSTEM STATUS</b>\n"
-        f"──────────────────────────────\n"
+        f"─────────────────────────────\n"
         f"📈 <b>Hardware Allocation:</b>\n"
-        f"<blockquote>"
-        f"• {get_performance_color(cpu_percent)} <b>CPU Usage:</b> <code>{cpu_percent}%</code>\n"
-        f"• {get_performance_color(memory.percent)} <b>Memory Usage:</b> <code>{memory.percent}%</code> (Free: {memory.available // (1024*1024)}MB)\n"
-        f"• {get_performance_color(disk.percent)} <b>Storage Usage:</b> <code>{disk.percent}%</code> (Free: {disk.free // (1024*1024*1024)}GB)"
-        f"</blockquote>\n"
+        f"• {get_performance_color(cpu_percent)} CPU Usage: <code>{cpu_percent}%</code>\n"
+        f"• {get_performance_color(memory.percent)} Memory Usage: <code>{memory.percent}%</code> (Free: {memory.available // (1024*1024)}MB)\n"
+        f"• {get_performance_color(disk.percent)} Storage Usage: <code>{disk.percent}%</code> (Free: {disk.free // (1024*1024*1024)}GB)\n\n"
         f"📊 <b>Platform Databases:</b>\n"
-        f"<blockquote>"
         f"• Registered Users: <code>{total_users}</code>\n"
         f"• Deployed Services: <code>{total_projects}</code>\n"
-        f"• Online Workers: <code>{running_projects}</code>"
-        f"</blockquote>\n"
+        f"• Online Workers: <code>{running_projects}</code>\n\n"
         f"⚙️ <b>Server Environments:</b>\n"
-        f"<blockquote>"
         f"{py_versions}"
         f"• Node.js Engine: {node_status}"
-        f"</blockquote>"
     )
     await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
 
@@ -1405,7 +1587,7 @@ async def user_management_command(update: Update, context: ContextTypes.DEFAULT_
         
     text = (
         f"👥 <b>PLATFORM CLIENT MANAGEMENT</b>\n"
-        f"──────────────────────────────\n"
+        f"─────────────────────────────\n"
     )
     for u in users:
         limit_lbl = "🔧 Admin" if u['file_limit'] == -1 else str(u['file_limit'])
@@ -1454,9 +1636,8 @@ async def limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id = int(context.args[0])
     limit = int(context.args[1])
     
-    # Block non-owners from promoting admins via /limit
     if limit == -1 and user_id != OWNER_ID:
-        await update.message.reply_text("❌ <b>Access Denied</b>\nOnly the supreme Platform Owner HmGamer can promote users to administrators.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ <b>Access Denied</b>\nOnly the supreme Platform Owner @EliteHM can promote users to administrators.", parse_mode=ParseMode.HTML)
         return
     
     with get_db_connection() as conn:
@@ -1492,7 +1673,7 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add a new administrator. Strictly restricted to Platform Owner (HmGamer) only."""
     user_id = update.effective_user.id
     if user_id != OWNER_ID:
-        await update.message.reply_text("❌ <b>Unauthorized Action</b>\nOnly the supreme Platform Owner HmGamer can add new administrators.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ <b>Unauthorized Action</b>\nOnly the supreme Platform Owner @EliteHM can add new administrators.", parse_mode=ParseMode.HTML)
         return
         
     if not context.args:
@@ -1552,7 +1733,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
-    # 🌟 KEYBOARD MENU INTERCEPTOR: Safe drop of subshell/env states on button clicks
     menu_buttons = [
         "🚀 HOST BOT", "📊 MY PROJECTS", "🖥️ VPS CONTROLS", 
         "⚙️ SELF-MGMT", "📢 BROADCAST", "📋 BOT LOGS", 
@@ -1574,7 +1754,150 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == "🧹 CLEAR LOGS": await clear_logs_command(update, context)
         return
     
-    # 💻 INTERACTIVE SCOPED CONTAINER CLI TERMINAL
+    # INTERACTIVE REQUIREMENT & VERSION INSTALLATION STATE PROCESSORS
+    if user_id in user_states and user_states[user_id].get("awaiting_pkg_install"):
+        p_id = user_states[user_id]["project_id"]
+        user_states.pop(user_id, None)
+        
+        p_msg = await update.message.reply_text("⏳ <i>Running environment package installer sequence...</i>", parse_mode=ParseMode.HTML)
+        
+        with get_db_connection() as conn:
+            proj = conn.execute("SELECT * FROM projects WHERE id = ?", (p_id,)).fetchone()
+        if not proj:
+            await p_msg.edit_text("❌ Project directory not found.")
+            return
+            
+        proj = dict(proj)
+        p_dir = project_folder(proj['user_id'], proj['project_name'])
+        framework = proj['framework']
+        
+        install_target = text.strip()
+        
+        try:
+            if framework == "Python":
+                cmd = [sys.executable, "-m", "pip", "install", install_target]
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if res.returncode == 0:
+                    req_file = os.path.join(p_dir, "requirements.txt")
+                    base_pkg = re.split(r'==|>=|<=|~=|<|>', install_target)[0].strip()
+                    lines = []
+                    if os.path.exists(req_file):
+                        with open(req_file, "r") as r:
+                            lines = r.readlines()
+                    
+                    new_lines = []
+                    for line in lines:
+                        clean_l = line.strip()
+                        if clean_l and not clean_l.startswith('#'):
+                            line_pkg = re.split(r'==|>=|<=|~=|<|>', clean_l)[0].strip()
+                            if line_pkg.lower() == base_pkg.lower():
+                                continue
+                        new_lines.append(line)
+                    
+                    new_lines.append(f"{install_target}\n")
+                    with open(req_file, "w") as w:
+                        w.writelines(new_lines)
+                        
+                    await p_msg.edit_text(f"✅ <b>Package Installed/Updated</b>\n<code>{install_target}</code> was loaded and locked into requirements.txt.")
+                else:
+                    await p_msg.edit_text(f"❌ <b>Installation Failed:</b>\n<pre>{html.escape(res.stderr or res.stdout)}</pre>", parse_mode=ParseMode.HTML)
+                    
+            elif framework == "Node.js":
+                cmd = ["npm", "install", install_target, "--save"]
+                res = subprocess.run(cmd, cwd=p_dir, capture_output=True, text=True, timeout=120)
+                if res.returncode == 0:
+                    await p_msg.edit_text(f"✅ <b>Package Installed/Updated</b>\n<code>{install_target}</code> successfully installed and listed in package.json.")
+                else:
+                    await p_msg.edit_text(f"❌ <b>npm Installation Failed:</b>\n<pre>{html.escape(res.stderr or res.stdout)}</pre>", parse_mode=ParseMode.HTML)
+            else:
+                await p_msg.edit_text("❌ Action only supported for Python or NodeJS frameworks.")
+                
+        except Exception as e:
+            await p_msg.edit_text(f"❌ Execution crash: {e}")
+            
+        await asyncio.sleep(1.5)
+        await render_package_manager(update, context, p_id)
+        return
+
+    # UNINSTALL PACKAGE ACTION
+    if user_id in user_states and user_states[user_id].get("awaiting_pkg_uninstall"):
+        p_id = user_states[user_id]["project_id"]
+        user_states.pop(user_id, None)
+        
+        p_msg = await update.message.reply_text("⏳ <i>Running package uninstallation routine...</i>", parse_mode=ParseMode.HTML)
+        
+        with get_db_connection() as conn:
+            proj = conn.execute("SELECT * FROM projects WHERE id = ?", (p_id,)).fetchone()
+        if not proj:
+            await p_msg.edit_text("❌ Project not found.")
+            return
+            
+        proj = dict(proj)
+        p_dir = project_folder(proj['user_id'], proj['project_name'])
+        framework = proj['framework']
+        target_pkg = text.strip()
+        
+        try:
+            if framework == "Python":
+                cmd = [sys.executable, "-m", "pip", "uninstall", "-y", target_pkg]
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                
+                req_file = os.path.join(p_dir, "requirements.txt")
+                if os.path.exists(req_file):
+                    with open(req_file, "r") as r:
+                        lines = r.readlines()
+                    new_lines = []
+                    for line in lines:
+                        clean_l = line.strip()
+                        if clean_l and not clean_l.startswith('#'):
+                            line_pkg = re.split(r'==|>=|<=|~=|<|>', clean_l)[0].strip()
+                            if line_pkg.lower() == target_pkg.lower():
+                                continue
+                        new_lines.append(line)
+                    with open(req_file, "w") as w:
+                        w.writelines(new_lines)
+                        
+                await p_msg.edit_text(f"✅ <b>Package Uninstalled</b>\n<code>{target_pkg}</code> removed and expunged from requirements.txt.")
+                
+            elif framework == "Node.js":
+                cmd = ["npm", "uninstall", target_pkg, "--save"]
+                res = subprocess.run(cmd, cwd=p_dir, capture_output=True, text=True, timeout=120)
+                if res.returncode == 0:
+                    await p_msg.edit_text(f"✅ <b>Package Uninstalled</b>\n<code>{target_pkg}</code> removed from node_modules and package.json.")
+                else:
+                    await p_msg.edit_text(f"❌ <b>npm Uninstall Failed:</b>\n<pre>{html.escape(res.stderr or res.stdout)}</pre>", parse_mode=ParseMode.HTML)
+            else:
+                await p_msg.edit_text("❌ Action only supported for Python or NodeJS frameworks.")
+                
+        except Exception as e:
+            await p_msg.edit_text(f"❌ Execution crash: {e}")
+            
+        await asyncio.sleep(1.5)
+        await render_package_manager(update, context, p_id)
+        return
+
+    # PORT CUSTOM CONFIGURATION INPUT
+    if user_id in user_states and user_states[user_id].get("awaiting_custom_port"):
+        p_id = user_states[user_id]["project_id"]
+        user_states.pop(user_id, None)
+        
+        try:
+            custom_port = int(text.strip())
+            if not (1024 <= custom_port <= 65535):
+                raise ValueError()
+                
+            with get_db_connection() as conn:
+                conn.execute("UPDATE projects SET port = ? WHERE id = ?", (custom_port, p_id))
+                conn.commit()
+            await update.message.reply_text(f"✅ Port allocation set manually to: <code>{custom_port}</code>. Restart workspace to deploy.", parse_mode=ParseMode.HTML)
+        except ValueError:
+            await update.message.reply_text("❌ Invalid input. Port must be a numeric value between 1024 and 65535.")
+            
+        await asyncio.sleep(1.2)
+        await render_api_bind_panel(update, context, p_id)
+        return
+
+    # SCOPED CONSOLE/CLI TERMINAL
     if user_id in user_states and user_states[user_id].get("awaiting_project_cli"):
         p_id = user_states[user_id]["project_id"]
         if text.lower() == "exit":
@@ -1628,7 +1951,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await p_msg.edit_text(f"❌ Subshell execution error: {e}")
         return
 
-    # Process secure standard terminal inputs
     if user_id in user_states and user_states[user_id].get("awaiting_shell_cmd"):
         if not is_admin(user_id): return
         if text.lower() == "exit":
@@ -1648,7 +1970,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await p_msg.edit_text(output_txt, parse_mode=ParseMode.HTML)
         return
         
-    # Process environmental dynamic updates JSON formats
     if user_id in user_states and user_states[user_id].get("awaiting_env_vars"):
         proj_id = user_states[user_id]["project_id"]
         try:
@@ -1659,7 +1980,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.execute("UPDATE projects SET env_vars = ? WHERE id = ?", (serialized, proj_id))
                 conn.commit()
                 
-            await update.message.reply_text("✅ Project environment configuration saved. Choose 'AUTO BUILD' or restart the project to apply variables.")
+            await update.message.reply_text("✅ Project environment configuration saved. Restart the project workspace to apply.")
             await show_project_console(update, context, proj_id)
         except json.JSONDecodeError:
             await update.message.reply_text("❌ Invalid JSON schema format. Configuration operation aborted.")
@@ -1682,16 +2003,29 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text("🤖 Use platform menu or /start for assistance.", parse_mode=ParseMode.HTML)
 
-# ===== BACKGROUND SERVICE LOOPS =====
+# ===== STATE RESILIENCY AUTO-START LOOPS =====
 def auto_start_all_projects():
+    """Resume active workspaces and startup daemons when bot restarts"""
     try:
         with get_db_connection() as conn:
-            projs = conn.execute("SELECT * FROM projects WHERE auto_restart = 1 AND status = 'stopped'").fetchall()
+            projs = conn.execute("SELECT * FROM projects WHERE status = 'running' OR (auto_restart = 1 AND status != 'stopped')").fetchall()
+        
+        logger.info(f"🔄 State Resiliency Engine: Found {len(projs)} active workspaces to restore...")
+        
         for p in projs:
-            threading.Thread(target=start_project_worker, args=(p['id'], None, None, None, None), daemon=True).start()
-            time.sleep(2)
+            with get_db_connection() as conn:
+                conn.execute("UPDATE projects SET status = 'stopped' WHERE id = ?", (p['id'],))
+                conn.commit()
+            
+            threading.Thread(
+                target=start_project_worker, 
+                args=(p['id'], None, None, None, None), 
+                daemon=True
+            ).start()
+            time.sleep(2.5)  # Safe spacing interval to prevent VPS CPU spikes during boot
+            
     except Exception as e:
-        logger.error(f"Auto-restart routine issue: {e}")
+        logger.error(f"State recovery manager encountered an issue: {e}")
 
 # ===== GLOBAL ERROR EXCEPTION DISPATCHER =====
 async def global_exception_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1708,25 +2042,20 @@ def main():
     apply_schema_migrations()
     init_advanced_database()
     
-    # Run auto start sequence in thread
-    threading.Thread(target=auto_start_all_projects, daemon=True).start()
+    # Resolve and cache VPS Public IP for accurate API endpoints
+    resolve_vps_public_ip()
     
-    # Configure custom HTTPX timeouts explicitly preventing premature read timeout terminations
-    request_config = HTTPXRequest(
-        connection_pool_size=10, 
-        connect_timeout=25.0, 
-        read_timeout=25.0,
-        write_timeout=25.0
-    )
+    # Run state recovery sequence inside background threads
+    threading.Thread(target=auto_start_all_projects, daemon=True).start()
     
     app = (
         Application.builder()
         .token(BOT_TOKEN)
-        .connection_pool_size(10)
-        .connect_timeout(30.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
-        .pool_timeout(30.0)
+        .connection_pool_size(12)
+        .connect_timeout(35.0)
+        .read_timeout(35.0)
+        .write_timeout(35.0)
+        .pool_timeout(35.0)
         .build()
     )
     
