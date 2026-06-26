@@ -366,16 +366,16 @@ async def bot_host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"🚀 <b>VPS ENVIRONMENT DEPLOYMENT MANAGER</b>\n\n"
-        f"Please upload your configuration code as a <code>.zip</code> archive package.\n\n"
+        f"Please upload your code as a <b>single file</b> (<code>.py</code>, <code>.js</code>, <code>.php</code>, <code>.html</code>) or a packaged <code>.zip</code> archive.\n\n"
         f"📋 <b>Requirements by File Type:</b>\n"
-        f"• <b>Python (.py)</b>: Entrypoint script (main.py/bot.py) + <code>requirements.txt</code>\n"
-        f"• <b>Node.js (.js)</b>: Entrypoint (main.js/index.js) + <code>package.json</code>\n"
+        f"• <b>Python (.py)</b>: Entrypoint script (main.py/bot.py) + requirements list\n"
+        f"• <b>Node.js (.js)</b>: Entrypoint (main.js/index.js) + package requirements\n"
         f"• <b>PHP (.php)</b>: Runs as web-daemon or CLI worker. Composer supported.\n"
         f"• <b>Static HTML (.html)</b>: Fast static asset server deployed automatically.\n\n"
         f"⚙️ Supported Runtimes:\n"
         f"{py_versions}"
         f"• Node.js: {nodejs_info}\n\n"
-        f"📤 <b>Send the ZIP file now:</b>",
+        f"📤 <b>Send the ZIP or code file now:</b>",
         parse_mode=ParseMode.HTML
     )
 
@@ -630,7 +630,7 @@ def start_project_worker(project_id, chat_id, loop, bot):
         logger.error(f"Sandbox runner spawning crashed: {e}", exc_info=True)
         push_msg(f"❌ Launcher engine breakdown: {e}")
 
-# ===== DEPLOYMENT HANDLERS WITH ALL-LANGUAGE SUPPORT =====
+# ===== DEPLOYMENT HANDLERS WITH ALL-LANGUAGE & SINGLE FILE SUPPORT =====
 async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -668,8 +668,8 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
         
     doc = update.message.document
-    if not doc or not doc.file_name.endswith('.zip'):
-        await update.message.reply_text("❌ Package format rejected. Please send `.zip` package format.")
+    if not doc:
+        await update.message.reply_text("❌ File upload invalid. Please upload a valid code package.")
         return
         
     if doc.file_size > MAX_FILE_SIZE:
@@ -680,25 +680,64 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     try:
         tg_file = await context.bot.get_file(doc.file_id)
-        archive_path = os.path.join(TEMP_DIR, f"{user_id}_{doc.file_name}")
-        await tg_file.download_to_drive(archive_path)
         
-        p_name = re.sub(r'[^a-zA-Z0-9_-]', '', doc.file_name.replace('.zip', ''))
+        filename_lower = doc.file_name.lower()
+        is_zip = filename_lower.endswith('.zip')
+        is_single = filename_lower.endswith(('.py', '.js', '.ts', '.php', '.html', '.htm'))
+        
+        if not (is_zip or is_single):
+            await p_msg.edit_text("❌ Package format rejected. Please send a `.zip` archive or a single code file (<code>.py</code>, <code>.js</code>, <code>.php</code>, <code>.html</code>).", parse_mode=ParseMode.HTML)
+            return
+
+        base_name, ext = os.path.splitext(doc.file_name)
+        p_name = re.sub(r'[^a-zA-Z0-9_-]', '', base_name)
         extract_dir = os.path.join(TEMP_DIR, f"ext_{user_id}_{p_name}")
         
-        with zipfile.ZipFile(archive_path, 'r') as zf:
-            zf.extractall(extract_dir)
-            
-        main_file = find_main_file(extract_dir)
-        if not main_file:
+        if os.path.exists(extract_dir):
             shutil.rmtree(extract_dir, ignore_errors=True)
+        os.makedirs(extract_dir, exist_ok=True)
+        
+        main_file = None
+        deps_installed_default = 0
+        
+        if is_zip:
+            archive_path = os.path.join(TEMP_DIR, f"{user_id}_{doc.file_name}")
+            await tg_file.download_to_drive(archive_path)
+            with zipfile.ZipFile(archive_path, 'r') as zf:
+                zf.extractall(extract_dir)
             os.remove(archive_path)
-            await p_msg.edit_text("❌ Launch configuration main entrypoint file absent. Please verify script entrypoint files exist.")
-            return
+            
+            main_file = find_main_file(extract_dir)
+            if not main_file:
+                shutil.rmtree(extract_dir, ignore_errors=True)
+                await p_msg.edit_text("❌ Launch configuration main entrypoint file absent. Please verify script entrypoint files exist.")
+                return
+        else:
+            # Single code file download directly
+            file_dest_path = os.path.join(extract_dir, doc.file_name)
+            await tg_file.download_to_drive(file_dest_path)
+            main_file = doc.file_name
+            deps_installed_default = 1  # Bypass standard dependencies installation check phase to boot instantly
+            
+            # Ensure proper scaffolding environment configurations
+            if ext.lower() == '.py':
+                with open(os.path.join(extract_dir, "requirements.txt"), "w") as f:
+                    f.write("# Auto-generated for single script deployment\n")
+            elif ext.lower() in ('.js', '.ts'):
+                p_json_content = {
+                    "name": p_name.lower(),
+                    "version": "1.0.0",
+                    "main": doc.file_name,
+                    "dependencies": {}
+                }
+                with open(os.path.join(extract_dir, "package.json"), "w") as f:
+                    json.dump(p_json_content, f, indent=2)
             
         types = detect_project_type(extract_dir, main_file)
         dest_dir = project_folder(user_id, p_name)
-        if os.path.exists(dest_dir): shutil.rmtree(dest_dir)
+        if os.path.exists(dest_dir): 
+            shutil.rmtree(dest_dir, ignore_errors=True)
+            
         shutil.move(extract_dir, dest_dir)
         create_sandbox_environment(dest_dir)
         
@@ -712,7 +751,7 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             framework = "Node.js"
         elif main_file.endswith('.php'):
             framework = "PHP"
-            if os.path.exists(os.path.join(dest_dir, "index.php")) or "index" in main_file:
+            if os.path.exists(os.path.join(dest_dir, "index.php")) or "index" in main_file or is_single:
                 port = find_available_port()
         elif main_file.endswith(('.html', '.htm')):
             framework = "Static HTML"
@@ -721,13 +760,11 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         with get_db_connection() as conn:
             cursor = conn.execute("""
                 INSERT INTO projects (user_id, project_name, main_file, framework, project_type, port, deps_installed)
-                VALUES (?, ?, ?, ?, ?, ?, 0)
-            """, (user_id, p_name, main_file, framework, ','.join(types), port))
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, p_name, main_file, framework, ','.join(types), port, deps_installed_default))
             project_id = cursor.lastrowid
             conn.commit()
             
-        os.remove(archive_path)
-        
         await p_msg.edit_text(
             f"✅ <b>WORKSPACE INITIALIZED SUCCESSFULLY!</b>\n\n"
             f"• <b>Project Name:</b> <code>{p_name}</code>\n"
@@ -759,7 +796,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("❌ System access expired or deactivated.")
         return
         
-    if data.startswith("portfolio_page_"):
+    if data.startswith("projects_page_"):
         await list_bots_command(update, context, int(data.split("_")[2]))
         return
     elif data == "refresh_projects":
@@ -1314,7 +1351,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.execute("UPDATE projects SET env_vars = ? WHERE id = ?", (serialized, proj_id))
                 conn.commit()
                 
-            await update.message.reply_text("✅ Project environment configuration saved. Choose 'AUTO BUILD' or restart the project to load variables.")
+            await update.message.reply_text("✅ Project environment configuration saved. Choose 'AUTO BUILD' or restart the project to apply variables.")
             await show_project_console(update, context, proj_id)
         except json.JSONDecodeError:
             await update.message.reply_text("❌ Invalid JSON schema format. Configuration operation aborted.")
@@ -1367,6 +1404,14 @@ def main():
     # Run auto start sequence in thread
     threading.Thread(target=auto_start_all_projects, daemon=True).start()
     
+    # Configure custom HTTPX timeouts explicitly preventing premature read timeout terminations on slow interfaces
+    request_config = HTTPXRequest(
+        connection_pool_size=10, 
+        connect_timeout=25.0, 
+        read_timeout=25.0,
+        write_timeout=25.0
+    )
+    
     # Set up the base application with the custom HTTPX connection configurations
     # We construct them via the builder directly so they lazy-initialize within the proper event loop.
     app = (
@@ -1399,7 +1444,8 @@ def main():
     app.add_handler(CommandHandler("install_deps", install_deps_command))
     app.add_handler(CommandHandler("systemd", systemd_action_handler))
     
-    app.add_handler(MessageHandler(filters.Document.ZIP, file_upload_handler))
+    # 🌟 BROADENED ROUTER FILTER: Accepts zip archives as well as single script files (.py, .js, .ts, etc.)
+    app.add_handler(MessageHandler(filters.Document.ALL, file_upload_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
     app.add_handler(CallbackQueryHandler(self_cb_management, pattern="^self_"))
