@@ -4,6 +4,7 @@ import re
 import logging
 import psutil
 import atexit
+import subprocess
 
 # ===== TOKEN VALIDATION =====
 def validate_bot_token(token):
@@ -17,10 +18,44 @@ def validate_bot_token(token):
     
     return True, "Token format is valid"
 
-# ===== STREAMING_CHUNK: Configuring developer credentials and parameters... =====
+# ===== ENVIRONMENT DETECTION =====
+def check_nodejs_installation():
+    """Check if Node.js and npm are installed on the host VPS"""
+    try:
+        result = subprocess.run(['node', '--version'], capture_output=True, text=True, timeout=10)
+        npm_result = subprocess.run(['npm', '--version'], capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0 and npm_result.returncode == 0:
+            return True
+        return False
+    except Exception:
+        return False
+
+def check_python_versions():
+    """Check available Python CLI commands and return versions"""
+    python_versions = {}
+    
+    # Check Python 3
+    try:
+        result = subprocess.run(['python3', '--version'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            python_versions['python3'] = result.stdout.strip()
+    except Exception:
+        pass
+    
+    # Check Python
+    try:
+        result = subprocess.run(['python', '--version'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            python_versions['python'] = result.stdout.strip()
+    except Exception:
+        pass
+    
+    return python_versions
+
 # ===== CORE PARAMETERS =====
 RAW_BOT_TOKEN = os.environ.get("BOT_TOKEN", "8816601154:AAHFNSbAGxzYxOnAJNK3EOV-L415Q_E2_Qc")
-
+875
 is_valid, validation_msg = validate_bot_token(RAW_BOT_TOKEN)
 if not is_valid:
     print(f"❌ Token Validation Failed: {validation_msg}")
@@ -32,7 +67,6 @@ OWNER_ID = int(os.environ.get("OWNER_ID", "8587570983"))
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "@EliteHM")
 DEVELOPER_NAME = "HmGamer"
 
-# ===== STREAMING_CHUNK: Setting up VPS operational directory structures... =====
 # ===== PATH DIRECTORIES =====
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 PID_FILE = os.path.join(BASE_DIR, "advanced_hosting_bot.pid")
@@ -41,9 +75,8 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "hosted_projects")
 LOG_DIR = os.path.join(BASE_DIR, "bot_logs")
 TEMP_DIR = os.path.join(BASE_DIR, "temp_uploads")
 
-# ===== STREAMING_CHUNK: Establishing resource and deployment thresholds... =====
 # ===== DEPLOYMENT SETTINGS =====
-MAX_FILE_SIZE_MB = 100  # Upgraded for larger deployments
+MAX_FILE_SIZE_MB = 100
 MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024
 INSTALL_TIMEOUT_SECONDS = 1800
 AUTO_RESTART_ENABLED = True
@@ -53,7 +86,10 @@ MONITORING_INTERVAL = 30
 for directory in [UPLOAD_DIR, LOG_DIR, TEMP_DIR]:
     os.makedirs(directory, exist_ok=True)
 
-# ===== STREAMING_CHUNK: Initializing dual-output logging engines... =====
+# Run environment checking flags
+NODEJS_AVAILABLE = check_nodejs_installation()
+PYTHON_VERSIONS = check_python_versions()
+
 # ===== LOGGING SYSTEM =====
 def setup_advanced_logging():
     """Setup comprehensive logging system logging to both stdout and a rolling file log"""
@@ -82,7 +118,6 @@ def setup_advanced_logging():
 
 logger = setup_advanced_logging()
 
-# ===== STREAMING_CHUNK: Activating single process security constraints... =====
 # ===== SINGLE INSTANCE PROTECTION =====
 def cleanup_pid_file():
     """Advanced cleanup of process files on safe termination"""
