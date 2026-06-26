@@ -106,6 +106,7 @@ def parse_python_imports(p_dir):
         "requests": "requests",
         "aiogram": "aiogram",
         "pyrogram": "pyrogram",
+        "pyromod": "pyromod",
         "flask": "flask",
         "fastapi": "fastapi",
         "django": "django",
@@ -172,6 +173,39 @@ def parse_nodejs_imports(p_dir):
                 except Exception as e:
                     logger.error(f"Error parsing node imports in {file_path}: {e}")
     return list(detected)
+
+def parse_requirements_txt_packages(req_file_path):
+    """Parse requirements.txt to collect listed packages for exclusion from dynamic installation"""
+    packages = set()
+    if os.path.exists(req_file_path):
+        try:
+            with open(req_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        # Regex to capture the package name (ignoring version constraints or extras like [secure])
+                        match = re.match(r'^([a-zA-Z0-9_\-]+)', line)
+                        if match:
+                            pkg_name = match.group(1).lower().replace('_', '-')
+                            packages.add(pkg_name)
+        except Exception as e:
+            logger.error(f"Error parsing requirements.txt: {e}")
+    return packages
+
+def parse_package_json_packages(package_json_path):
+    """Parse package.json to collect listed dependencies for exclusion from dynamic installation"""
+    packages = set()
+    if os.path.exists(package_json_path):
+        try:
+            with open(package_json_path, 'r', encoding='utf-8', errors='ignore') as f:
+                data = json.load(f)
+                for dep_type in ['dependencies', 'devDependencies', 'peerDependencies']:
+                    if dep_type in data:
+                        for pkg in data[dep_type].keys():
+                            packages.add(pkg.lower())
+        except Exception as e:
+            logger.error(f"Error parsing package.json: {e}")
+    return packages
 
 # ===== AUTO-PROVISION SYSTEM DEPENDENCIES (PHP, NPM, ETC) =====
 async def run_auto_provisioner_async(bot_obj: Bot):
@@ -591,27 +625,49 @@ async def show_project_console(update: Update, context: ContextTypes.DEFAULT_TYP
     await send_response(update, console_view, reply_markup=InlineKeyboardMarkup(buttons))
 
 # ===== EXECUTOR LAUNCH PIPELINE WITH MULTI-LANGUAGE DEPS =====
-def start_project_worker(project_id, chat_id, loop, bot):
-    """Robust dynamic worker loader launching environments and installing missing modules"""
-    def push_msg(msg):
-        if not bot or not loop or not chat_id: return
+def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
+    """Robust dynamic worker loader launching environments and installing missing modules with in-place edits"""
+    
+    # Read the project details securely
+    with get_db_connection() as conn:
+        fresh = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not fresh: return
+    
+    project = dict(fresh)
+    p_name = project['project_name']
+    p_dir = project_folder(project['user_id'], p_name)
+    log_file = os.path.join(LOG_DIR, f"project_{project_id}.txt")
+    framework = project['framework']
+    main_file = project['main_file']
+    
+    current_status = [
+        f"✅ <b>WORKSPACE INITIALIZED SUCCESSFULLY!</b>\n",
+        f"• <b>Project Name:</b> <code>{p_name}</code>",
+        f"• <b>Engine Class:</b> {framework}",
+        f"• <b>Entry Launch File:</b> <code>{main_file}</code>",
+        f"---------------------------------------",
+        f"⏳ <b>Live Deployment Progress:</b>"
+    ]
+    
+    def update_status(new_line):
+        if not bot or not loop or not chat_id or not status_msg_id: return
+        current_status.append(f"  → {new_line}")
+        full_text = "\n".join(current_status)
+        if len(full_text) > 4000:
+            full_text = "..." + full_text[-3800:]
         try:
             asyncio.run_coroutine_threadsafe(
-                bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML), loop
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg_id,
+                    text=full_text,
+                    parse_mode=ParseMode.HTML
+                ), loop
             ).result(timeout=10)
         except Exception as e:
-            logger.error(f"Worker communication failure: {e}")
+            logger.error(f"Status update failed: {e}")
 
     try:
-        with get_db_connection() as conn:
-            fresh = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        if not fresh: return
-        
-        project = dict(fresh)
-        p_name = project['project_name']
-        p_dir = project_folder(project['user_id'], p_name)
-        log_file = os.path.join(LOG_DIR, f"project_{project_id}.txt")
-        
         # Configure env variables safely
         env = os.environ.copy()
         env['BOT_HOSTING_PLATFORM'] = 'True'
@@ -627,7 +683,7 @@ def start_project_worker(project_id, chat_id, loop, bot):
         
         # Multi-Language Automated Dependency Builder
         if not project['deps_installed']:
-            push_msg(f"🛠️ [{p_name}] System analyzing packages & triggering automated dependency builder...")
+            update_status("System analyzing packages & triggering automated dependency builder...")
             
             # --- ADVANCED DYNAMIC CODE RECONNAISSANCE SCANNER ---
             # Automatically scans the active workspace and detects dependencies that are imported in code
@@ -644,6 +700,7 @@ def start_project_worker(project_id, chat_id, loop, bot):
             if project['framework'] == "Node.js":
                 # Ensure a package.json scaffold is available to prevent npm crashes
                 p_json_path = os.path.join(p_dir, 'package.json')
+                p_json_packages = set()
                 if not os.path.exists(p_json_path):
                     p_json_content = {
                         "name": p_name.lower(),
@@ -656,62 +713,81 @@ def start_project_worker(project_id, chat_id, loop, bot):
                             json.dump(p_json_content, f, indent=2)
                     except Exception as e:
                         logger.error(f"Failed to generate package.json scaffold: {e}")
+                else:
+                    p_json_packages = parse_package_json_packages(p_json_path)
 
-                push_msg(f"⚡ Running npm installation sequences for <code>{p_name}</code>...")
+                update_status(f"Running npm installation sequences...")
                 try:
                     res = subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=p_dir, capture_output=True, text=True, timeout=300)
                     if res.returncode == 0:
-                        push_msg("✅ Original package.json dependencies resolved.")
+                        update_status("Original package.json dependencies resolved.")
                     else:
                         logger.warning(f"npm install alert: {res.stderr}")
                 except Exception as e:
-                    push_msg(f"⚠️ npm installation warning: {e}")
+                    update_status(f"⚠️ npm installation warning: {e}")
+                
+                # Filter out packages that are already in package.json to prevent overrides
+                filtered_auto = []
+                for pkg in auto_packages_to_install:
+                    if pkg.lower() not in p_json_packages:
+                        filtered_auto.append(pkg)
                 
                 # Install dynamically scanned NodeJS packages to guarantee no crash
-                if auto_packages_to_install:
-                    push_msg(f"🕵️‍♂️ Detected <code>{len(auto_packages_to_install)}</code> unlisted imported NodeJS modules: <code>{', '.join(auto_packages_to_install)}</code>\n⏳ Installing now to prevent runtime crash...")
+                if filtered_auto:
+                    update_status(f"Detected <code>{len(filtered_auto)}</code> unlisted imported NodeJS modules: <code>{', '.join(filtered_auto)}</code>")
+                    update_status("Installing scanned NodeJS imports...")
                     try:
-                        npm_args = ["npm", "install", "--no-audit", "--no-fund", "--save"] + auto_packages_to_install
+                        npm_args = ["npm", "install", "--no-audit", "--no-fund", "--save"] + filtered_auto
                         subprocess.run(npm_args, cwd=p_dir, capture_output=True, text=True, timeout=300)
-                        push_msg("✅ Successfully pre-installed all scanned NodeJS imports.")
+                        update_status("Successfully pre-installed scanned NodeJS imports.")
                     except Exception as e:
                         logger.error(f"Dynamic Node dependency pre-installation failed: {e}")
                     
             # 2. PHP Composer Support
             elif project['framework'] == "PHP" and os.path.exists(os.path.join(p_dir, 'composer.json')):
-                push_msg(f"⚡ Running Composer workspace installation patterns for <code>{p_name}</code>...")
+                update_status(f"Running Composer workspace installation patterns...")
                 try:
                     res = subprocess.run(["composer", "install", "--no-interaction", "--ignore-platform-reqs"], cwd=p_dir, capture_output=True, text=True, timeout=300)
                     if res.returncode == 0:
-                        push_msg("✅ Composer resolved dependencies successfully.")
+                        update_status("Composer resolved dependencies successfully.")
                 except Exception as e:
-                    push_msg(f"⚠️ Composer launcher omitted: {e}")
+                    update_status(f"⚠️ Composer launcher omitted: {e}")
                     
             # 3. Python Virtualenv installs
             elif project['framework'] == "Python":
                 req_file = find_requirements_txt(p_dir)
+                req_packages = set()
                 if req_file:
-                    push_msg(f"⚡ Building PyPI dependencies from requirements.txt...")
+                    req_packages = parse_requirements_txt_packages(req_file)
+                    update_status(f"Building PyPI dependencies from requirements.txt...")
                     try:
                         res = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file], capture_output=True, text=True, timeout=300)
                         if res.returncode != 0:
                             subprocess.run(["pip3", "install", "-r", req_file], timeout=300)
-                        push_msg("✅ requirements.txt dependencies resolved.")
+                        update_status("requirements.txt dependencies resolved.")
                     except Exception as e:
-                        push_msg(f"⚠️ pip installation wrapper warning: {e}")
+                        update_status(f"⚠️ pip installation wrapper warning: {e}")
+                
+                # Filter out packages that are already in requirements.txt to prevent version overriding
+                filtered_auto = []
+                for pkg in auto_packages_to_install:
+                    normalized_pkg = pkg.lower().replace('_', '-')
+                    if normalized_pkg not in req_packages:
+                        filtered_auto.append(pkg)
                 
                 # Install dynamically scanned Python packages to guarantee no crash
-                if auto_packages_to_install:
-                    push_msg(f"🕵️‍♂️ Detected <code>{len(auto_packages_to_install)}</code> unlisted imported Python modules: <code>{', '.join(auto_packages_to_install)}</code>\n⏳ Pre-installing now to prevent runtime crash...")
+                if filtered_auto:
+                    update_status(f"Detected <code>{len(filtered_auto)}</code> unlisted imported Python modules: <code>{', '.join(filtered_auto)}</code>")
+                    update_status("Pre-installing scanned Python imports...")
                     try:
-                        pip_args = [sys.executable, "-m", "pip", "install"] + auto_packages_to_install
+                        pip_args = [sys.executable, "-m", "pip", "install"] + filtered_auto
                         subprocess.run(pip_args, capture_output=True, text=True, timeout=300)
-                        push_msg("✅ Successfully pre-installed all scanned Python imports.")
+                        update_status("Successfully pre-installed scanned Python imports.")
                     except Exception as e:
                         try:
-                            pip3_args = ["pip3", "install"] + auto_packages_to_install
+                            pip3_args = ["pip3", "install"] + filtered_auto
                             subprocess.run(pip3_args, capture_output=True, text=True, timeout=300)
-                            push_msg("✅ Successfully pre-installed scanned Python imports (via fallback).")
+                            update_status("Successfully pre-installed scanned Python imports (via fallback).")
                         except Exception as ex:
                             logger.error(f"Dynamic Python dependency pre-installation failed: {ex}")
                         
@@ -721,7 +797,6 @@ def start_project_worker(project_id, chat_id, loop, bot):
                 conn.commit()
 
         # Generate Launcher Commands based on engine architectures
-        main_file = project['main_file']
         cmd_args = None
         
         if project['framework'] == "Python":
@@ -753,9 +828,10 @@ def start_project_worker(project_id, chat_id, loop, bot):
             cmd_args = ["python3", "-m", "http.server", str(project['port'])]
 
         if not cmd_args:
-            push_msg(f"❌ [{p_name}] Launch command configuration could not be generated.")
+            update_status("❌ Launch command configuration could not be generated.")
             return
             
+        update_status(f"Spawning worker runner instance...")
         with open(log_file, 'a') as lf:
             lf.write(f"\n=== LAUNCH WORKER ACTIVE AT {datetime.now()} ===\n")
             lf.write(f"Launch command: {' '.join(cmd_args)}\n")
@@ -769,10 +845,10 @@ def start_project_worker(project_id, chat_id, loop, bot):
             conn.execute("INSERT OR REPLACE INTO process_monitoring (project_id, pid, start_time) VALUES (?, ?, CURRENT_TIMESTAMP)", (project_id, proc.pid))
             conn.commit()
             
-        push_msg(f"🟢 [{p_name}] Workspace runner successfully spawned (PID: {proc.pid})")
+        update_status(f"🟢 <b>Process active & monitoring!</b> (PID: {proc.pid})")
     except Exception as e:
         logger.error(f"Sandbox runner spawning crashed: {e}", exc_info=True)
-        push_msg(f"❌ Launcher engine breakdown: {e}")
+        update_status(f"❌ Launcher engine breakdown: {e}")
 
 # ===== DEPLOYMENT HANDLERS WITH ALL-LANGUAGE & SINGLE FILE SUPPORT =====
 async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -842,9 +918,6 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         os.makedirs(extract_dir, exist_ok=True)
         
         main_file = None
-        
-        # 🌟 CRITICAL FIX: Ensure deps_installed = 0 initially even for single files,
-        # so that they run through our advanced automated dynamic scanning & dependencies install phase!
         deps_installed_default = 0
         
         if is_zip:
@@ -903,12 +976,33 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             framework = "Static HTML"
             port = find_available_port()
             
+        # 🌟 SAFE IN-PLACE UNIQUE CONSTRAINT MERGING HANDLER
         with get_db_connection() as conn:
-            cursor = conn.execute("""
-                INSERT INTO projects (user_id, project_name, main_file, framework, project_type, port, deps_installed)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, p_name, main_file, framework, ','.join(types), port, deps_installed_default))
-            project_id = cursor.lastrowid
+            existing_project = conn.execute(
+                "SELECT id, user_id FROM projects WHERE project_name = ?", (p_name,)
+            ).fetchone()
+            
+            if existing_project:
+                if existing_project['user_id'] != user_id:
+                    await p_msg.edit_text("❌ <b>Deployment Error:</b> This project name is already reserved by another user.")
+                    return
+                
+                project_id = existing_project['id']
+                logger.info(f"Overwriting existing project '{p_name}' (ID: {project_id}). Stopping active instance...")
+                stop_process(project_id)
+                
+                conn.execute("""
+                    UPDATE projects 
+                    SET main_file = ?, framework = ?, project_type = ?, port = ?, deps_installed = ?
+                    WHERE id = ?
+                """, (main_file, framework, ','.join(types), port, deps_installed_default, project_id))
+            else:
+                cursor = conn.execute("""
+                    INSERT INTO projects (user_id, project_name, main_file, framework, project_type, port, deps_installed)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, p_name, main_file, framework, ','.join(types), port, deps_installed_default))
+                project_id = cursor.lastrowid
+            
             conn.commit()
             
         await p_msg.edit_text(
@@ -922,7 +1016,7 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         loop = asyncio.get_running_loop()
         threading.Thread(
             target=start_project_worker,
-            args=(project_id, p_msg.chat.id, loop, context.bot),
+            args=(project_id, p_msg.chat.id, p_msg.message_id, loop, context.bot),
             daemon=True
         ).start()
     except Exception as e:
@@ -1041,15 +1135,20 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             running = is_running(p_id)
             if running:
                 stop_process(p_id)
-                await query.message.reply_text(f"⏹️ Project {proj['project_name']} stopped.")
+                await query.answer(f"⏹️ Project {proj['project_name']} stopped successfully.")
             else:
+                status_msg = await context.bot.send_message(
+                    query.message.chat.id, 
+                    f"⏳ Launching project <code>{proj['project_name']}</code>...", 
+                    parse_mode=ParseMode.HTML
+                )
                 loop = asyncio.get_running_loop()
                 threading.Thread(
                     target=start_project_worker,
-                    args=(p_id, query.message.chat.id, loop, context.bot),
+                    args=(p_id, query.message.chat.id, status_msg.message_id, loop, context.bot),
                     daemon=True
                 ).start()
-                await query.message.reply_text(f"▶️ Starting project {proj['project_name']} worker process...")
+                return  # Prevent overlapping redraw while dynamic updates log edits
                 
         elif action == "p_env":
             user_states[user_id] = {"awaiting_env_vars": True, "project_id": p_id}
@@ -1085,6 +1184,11 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 await query.message.reply_text("📋 Logs database empty for this workspace.")
                 
         elif action == "p_build":
+            status_msg = await context.bot.send_message(
+                query.message.chat.id, 
+                f"🧹 Rebuilding workspace dependencies for <code>{proj['project_name']}</code>...", 
+                parse_mode=ParseMode.HTML
+            )
             stop_process(p_id)
             with get_db_connection() as conn:
                 conn.execute("UPDATE projects SET deps_installed = 0 WHERE id = ?", (p_id,))
@@ -1092,10 +1196,10 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             loop = asyncio.get_running_loop()
             threading.Thread(
                 target=start_project_worker,
-                args=(p_id, query.message.chat.id, loop, context.bot),
+                args=(p_id, query.message.chat.id, status_msg.message_id, loop, context.bot),
                 daemon=True
             ).start()
-            await query.message.reply_text(f"🧹 Workspace dependencies build queued for <code>{proj['project_name']}</code>.", parse_mode=ParseMode.HTML)
+            return  # Skip calling show_project_console since start_project_worker will edit that message
             
         elif action == "p_purge":
             stop_process(p_id)
@@ -1110,7 +1214,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 conn.execute("DELETE FROM process_monitoring WHERE project_id = ?", (p_id,))
                 conn.commit()
                 
-            await query.message.reply_text(f"🗑️ Purged project <code>{proj['project_name']}</code> workspace fully.", parse_mode=ParseMode.HTML)
+            await query.answer("🗑️ Project workspace purged fully!")
             await list_bots_command(update, context)
             return
 
@@ -1527,7 +1631,7 @@ def auto_start_all_projects():
         with get_db_connection() as conn:
             projs = conn.execute("SELECT * FROM projects WHERE auto_restart = 1 AND status = 'stopped'").fetchall()
         for p in projs:
-            threading.Thread(target=start_project_worker, args=(p['id'], None, None, None), daemon=True).start()
+            threading.Thread(target=start_project_worker, args=(p['id'], None, None, None, None), daemon=True).start()
             time.sleep(2)
     except Exception as e:
         logger.error(f"Auto-restart routine issue: {e}")
@@ -1549,6 +1653,14 @@ def main():
     
     # Run auto start sequence in thread
     threading.Thread(target=auto_start_all_projects, daemon=True).start()
+    
+    # Configure custom HTTPX timeouts explicitly preventing premature read timeout terminations on slow interfaces
+    request_config = HTTPXRequest(
+        connection_pool_size=10, 
+        connect_timeout=25.0, 
+        read_timeout=25.0,
+        write_timeout=25.0
+    )
     
     # Set up the base application with the custom HTTPX connection configurations
     # We construct them via the builder directly so they lazy-initialize within the proper event loop.
