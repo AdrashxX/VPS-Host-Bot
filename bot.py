@@ -8,11 +8,10 @@ import html
 import shutil
 import zipfile
 import re
-import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import psutil
 
-# Safe dynamic guard checking and installing of core library dependency
+# Safe dynamic guard checking and installing of core library dependencies
 try:
     from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, Bot
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -105,10 +104,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Owner notification failure: {e}")
 
-    # Build Admin navigation including Host Controls and Core VPS managers
+    # Build Admin navigation with shortened SELF-MGMT title as requested
     buttons = [
         ["🚀 HOST BOT", "📊 MY PROJECTS"],
-        ["🖥️ VPS CONTROLS", "⚙️ BOT SELF-MANAGEMENT"],
+        ["🖥️ VPS CONTROLS", "⚙️ SELF-MGMT"],
         ["📢 BROADCAST", "📋 BOT LOGS"],
         ["🖥️ SYSTEM STATUS", "👥 USER MANAGEMENT"],
         ["🧹 CLEAR LOGS"]
@@ -637,10 +636,12 @@ async def user_management_command(update: Update, context: ContextTypes.DEFAULT_
         
     text = "👥 <b>PLATFORM CLIENT MANAGEMENT</b>\n\n"
     for u in users:
-        limit_lbl = "Unlimited" if u['file_limit'] == -1 else str(u['file_limit'])
-        text += f"• <code>{u['user_id']}</code> | @{u['username'] or 'Unknown'} | Limit: {limit_lbl}\n"
+        limit_lbl = "🔧 Admin" if u['file_limit'] == -1 else str(u['file_limit'])
+        text += f"• <code>{u['user_id']}</code> | @{u['username'] or 'Unknown'} | Access: {limit_lbl}\n"
         
-    text += f"\n👉 Admin Command: <code>/limit [USERID] [LIMIT]</code>"
+    text += f"\n👉 Admin Commands:\n" \
+            f"• Whitelist: <code>/limit [USERID] [LIMIT]</code>\n" \
+            f"• Promote Admin (Owner Only): <code>/addadmin [USERID]</code>"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -675,16 +676,82 @@ async def promo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Transport system failure: {e}")
 
 async def limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Configure client resource limits. Only the supreme Owner can make admins."""
     user_id = update.effective_user.id
     if not is_admin(user_id): return
     if len(context.args) != 2: return
     target_id = int(context.args[0])
     limit = int(context.args[1])
     
+    # Block non-owners from promoting admins via /limit
+    if limit == -1 and user_id != OWNER_ID:
+        await update.message.reply_text("❌ <b>Access Denied</b>\nOnly the supreme Platform Owner HmGamer can promote users to administrators.", parse_mode=ParseMode.HTML)
+        return
+    
     with get_db_connection() as conn:
         conn.execute("INSERT INTO users (user_id, username, file_limit) VALUES (?, 'Unknown', ?) ON CONFLICT(user_id) DO UPDATE SET file_limit = ?", (target_id, limit, limit))
         conn.commit()
     await update.message.reply_text(f"✅ User ID <code>{target_id}</code> limit updated to: {limit}", parse_mode=ParseMode.HTML)
+
+    try:
+        if limit > 0:
+            notify_msg = (
+                f"🎉 <b>PLATFORM ACCESS GRANTED!</b>\n\n"
+                f"Your hosting platform account has been successfully authorized by the administrator.\n"
+                f"📦 <b>Your Deployment Limit:</b> {limit} bot(s)\n\n"
+                f"👉 Send /start to initialize your hosting dashboard controls!"
+            )
+        elif limit == -1:
+            notify_msg = (
+                f"👑 <b>ADMIN STATUS GRANTED!</b>\n\n"
+                f"Your account has been promoted to a Platform Administrator.\n\n"
+                f"👉 Send /start to load your administrative control panel dashboard!"
+            )
+        else:
+            notify_msg = (
+                f"⚠️ <b>ACCESS SUSPENDED!</b>\n\n"
+                f"Your hosting platform clearance has been revoked by the administrator."
+            )
+            
+        await context.bot.send_message(chat_id=target_id, text=notify_msg, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.warning(f"Could not send clearance notification to target user {target_id}: {e}")
+
+async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add a new administrator. Strictly restricted to Platform Owner (HmGamer) only."""
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ <b>Unauthorized Action</b>\nOnly the supreme Platform Owner HmGamer can add new administrators.", parse_mode=ParseMode.HTML)
+        return
+        
+    if not context.args:
+        await update.message.reply_text("❌ <b>Usage:</b> <code>/addadmin [USER_ID]</code>", parse_mode=ParseMode.HTML)
+        return
+        
+    try:
+        target_id = int(context.args[0])
+        with get_db_connection() as conn:
+            conn.execute("""
+                INSERT INTO users (user_id, username, file_limit) 
+                VALUES (?, 'Unknown', -1) 
+                ON CONFLICT(user_id) DO UPDATE SET file_limit = -1
+            """, (target_id,))
+            conn.commit()
+            
+        await update.message.reply_text(f"👑 <b>New Admin Appointed</b>\nUser ID <code>{target_id}</code> is now configured as a platform administrator.", parse_mode=ParseMode.HTML)
+        
+        try:
+            notify_msg = (
+                f"👑 <b>ADMIN STATUS GRANTED!</b>\n\n"
+                f"You have been officially promoted to a Platform Administrator by the Owner <b>HmGamer</b>.\n\n"
+                f"👉 Send /start to initialize your systemd commands and dashboard workspace controllers!"
+            )
+            await context.bot.send_message(chat_id=target_id, text=notify_msg, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.warning(f"Could not send administrator notification to target ID {target_id}: {e}")
+            
+    except ValueError:
+        await update.message.reply_text("❌ Please specify a valid numeric User ID.", parse_mode=ParseMode.HTML)
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
@@ -714,10 +781,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
-    # 🌟 CRITICAL FIX: Intercept keyboard menu inputs first, popping awaiting_shell_cmd state.
+    # 🌟 CRITICAL FIX: Intercept keyboard menu inputs first, including shortened SELF-MGMT button.
     menu_buttons = [
         "🚀 HOST BOT", "📊 MY PROJECTS", "🖥️ VPS CONTROLS", 
-        "⚙️ BOT SELF-MANAGEMENT", "📢 BROADCAST", "📋 BOT LOGS", 
+        "⚙️ SELF-MGMT", "📢 BROADCAST", "📋 BOT LOGS", 
         "🖥️ SYSTEM STATUS", "👥 USER MANAGEMENT", "🧹 CLEAR LOGS"
     ]
     
@@ -729,7 +796,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == "🚀 HOST BOT": await bot_host_command(update, context)
         elif text == "📊 MY PROJECTS": await list_bots_command(update, context)
         elif text == "🖥️ VPS CONTROLS": await exec_shell_panel(update, context)
-        elif text == "⚙️ BOT SELF-MANAGEMENT": await self_management_panel(update, context)
+        elif text == "⚙️ SELF-MGMT": await self_management_panel(update, context)
         elif text == "📢 BROADCAST": await broadcast_command(update, context)
         elif text == "📋 BOT LOGS": await bot_logs_command(update, context)
         elif text == "🖥️ SYSTEM STATUS": await system_status_command(update, context)
@@ -815,6 +882,7 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("promo", promo_command))
     app.add_handler(CommandHandler("limit", limit_command))
+    app.add_handler(CommandHandler("addadmin", add_admin_command))
     app.add_handler(CommandHandler("refresh", refresh_command))
     app.add_handler(CommandHandler("install_deps", install_deps_command))
     app.add_handler(CommandHandler("systemd", systemd_action_handler))
