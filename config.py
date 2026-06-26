@@ -19,7 +19,7 @@ def validate_bot_token(token):
 
 # ===== STREAMING_CHUNK: Configuring developer credentials and parameters... =====
 # ===== CORE PARAMETERS =====
-RAW_BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758036479:AAG3XqBBOxwbBvhoq5lrqEOB_O8rm2TP4W4")
+RAW_BOT_TOKEN = os.environ.get("BOT_TOKEN", "8816601154:AAHFNSbAGxzYxOnAJNK3EOV-L415Q_E2_Qc")
 
 is_valid, validation_msg = validate_bot_token(RAW_BOT_TOKEN)
 if not is_valid:
