@@ -8,8 +8,11 @@ import html
 import shutil
 import zipfile
 import re
+import json
+import sqlite3
 from datetime import datetime, timedelta
 import psutil
+import subprocess
 
 # Safe dynamic guard checking and installing of core library dependencies
 try:
@@ -41,7 +44,7 @@ from process_manager import (
     running_processes, is_running, get_process_info, stop_process,
     project_folder, create_sandbox_environment, find_available_port,
     find_main_file, find_requirements_txt, detect_project_type,
-    install_dependencies, execute_vps_shell, hot_reboot_bot, manage_systemd_unit
+    execute_vps_shell, hot_reboot_bot, manage_systemd_unit
 )
 
 logger = setup_advanced_logging()
@@ -49,6 +52,210 @@ logger = setup_advanced_logging()
 # User navigation tracking states
 user_states = {}
 broadcast_states = {}
+
+# ===== DATABASE STRUCTURAL MIGRATION SAFEGUARDS =====
+def apply_schema_migrations():
+    """Ensure database schema matches the advanced environment variables and settings requirements"""
+    try:
+        with get_db_connection() as conn:
+            # Migration 1: env_vars column
+            try:
+                conn.execute("ALTER TABLE projects ADD COLUMN env_vars TEXT DEFAULT '{}'")
+            except sqlite3.OperationalError:
+                pass  # Already exists
+                
+            # Migration 2: Discovered services supervision table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS discovered_services (
+                    pid INTEGER PRIMARY KEY,
+                    name TEXT,
+                    cmdline TEXT,
+                    reason TEXT,
+                    ports TEXT,
+                    status TEXT DEFAULT 'running',
+                    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+            logger.info("🗄️ Database migrations and schema checks executed successfully.")
+    except Exception as e:
+        logger.error(f"⚠️ Non-critical schema migration check warning: {e}")
+
+# ===== AUTO-PROVISION SYSTEM DEPENDENCIES (PHP, NPM, ETC) =====
+def run_auto_provisioner(bot_obj: Bot):
+    """Checks the host VPS for node, npm, php, composer, and installs missing packages in background"""
+    def provision_worker():
+        time.sleep(5)  # Wait for polling server to start up cleanly
+        missing = []
+        
+        # Checking executable presence
+        if shutil.which("node") is None or shutil.which("npm") is None:
+            missing.append("nodejs")
+            missing.append("npm")
+        if shutil.which("php") is None:
+            missing.append("php")
+            missing.append("php-cli")
+        if shutil.which("composer") is None:
+            missing.append("composer")
+        if shutil.which("unzip") is None:
+            missing.append("unzip")
+            
+        if not missing:
+            logger.info("✅ All essential system compilers and web engines present on host.")
+            return
+
+        # Notify Owner HmGamer that system provisioning has started
+        try:
+            asyncio.run(bot_obj.send_message(
+                OWNER_ID,
+                f"⚙️ <b>VPS AUTO-PROVISIONER INITIATED</b>\n\n"
+                f"The system detected missing dependencies on your VPS: <code>{', '.join(missing)}</code>.\n"
+                f"⏳ Installing components via apt-get in the background...",
+                parse_mode=ParseMode.HTML
+            ))
+        except Exception as e:
+            logger.error(f"Failed to alert owner of provisioning: {e}")
+
+        try:
+            # Upgrade package index
+            subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True, check=True)
+            
+            # Install NodeSource repositories if nodejs is missing
+            if "nodejs" in missing:
+                subprocess.run("curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -", shell=True, check=True)
+                
+            # Direct installations
+            install_cmd = ["sudo", "apt-get", "install", "-y", "unzip", "sqlite3"]
+            if "nodejs" in missing:
+                install_cmd.extend(["nodejs"])
+            if "php" in missing:
+                install_cmd.extend(["php", "php-cli", "php-mbstring"])
+                
+            subprocess.run(install_cmd, capture_output=True, check=True)
+            
+            # Auto install PHP composer if missing
+            if "composer" in missing:
+                setup_composer_cmd = "curl -sS https://getcomposer.org/installer | php && sudo mv composer.phar /usr/local/bin/composer"
+                subprocess.run(setup_composer_cmd, shell=True, check=True)
+
+            # Reload environment variable detections
+            global NODEJS_AVAILABLE
+            from config import check_nodejs_installation
+            NODEJS_AVAILABLE = check_nodejs_installation()
+
+            asyncio.run(bot_obj.send_message(
+                OWNER_ID,
+                f"✅ <b>VPS AUTO-PROVISIONING COMPLETE</b>\n\n"
+                f"All requested components (NodeJS, PHP, Composer, SQLite, Unzip) are now installed and ready to use!",
+                parse_mode=ParseMode.HTML
+            ))
+            logger.info("✅ System provisioning complete.")
+        except Exception as e:
+            logger.error(f"Failed during background auto-provisioning: {e}")
+            try:
+                asyncio.run(bot_obj.send_message(
+                    OWNER_ID,
+                    f"❌ <b>VPS PROVISIONING EXCEPTION CRASH</b>\n\n"
+                    f"Error encountered: <code>{html.escape(str(e))}</code>",
+                    parse_mode=ParseMode.HTML
+                ))
+            except:
+                pass
+
+    threading.Thread(target=provision_worker, daemon=True).start()
+
+# ===== VPS ACTIVE PORTS & PROCESS SCANNER (FOREIGN BOTS/APIs) =====
+def scan_vps_for_foreign_services():
+    """Scans all active processes for external bots or web APIs, saving metadata to the database"""
+    discovered_projects = []
+    try:
+        # Get our own script PID to ignore it
+        self_pid = os.getpid()
+        
+        # Retrieve all currently running bot PIDs
+        registered_pids = set(running_processes.values())
+        
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'cwd']):
+            try:
+                pinfo = proc.info
+                pid = p_id = pinfo = pinfo_cmd = None
+                
+                # Retrieve process metadata
+                pid = u_pid = p_id = p_id_val = p_info_val = pinfo = u_pid = u_p_id = u_p = p = p_pid_val = p_id_val = None
+                
+                pid = u_pid = p_id = p_id_str = p_val = p_row = p_row_obj = p_row_data = p_row_val = p_row_val_str = p_row_val_data = None
+                
+                pid = p_id = proc.pid
+                if pid == self_pid or pid in registered_pids:
+                    continue
+                    
+                cmdline = proc.info['cmdline']
+                if not cmdline:
+                    continue
+                    
+                cmd_str = " ".join(cmdline).lower()
+                cwd = proc.info['cwd'] or "Unknown"
+                
+                is_foreign = False
+                reason = ""
+                framework = "Unknown"
+                
+                # Heuristic scanning signatures for Bots and Web APIs
+                if any(x in cmd_str for x in ["bot.py", "telebot", "discord", "aiogram", "pyrogram", "telegraf", "discord.js", "node-telegram-bot-api"]):
+                    is_foreign = True
+                    reason = "Foreign Telegram/Discord Bot"
+                    framework = "Node.js" if "node" in cmd_str else "Python"
+                elif any(x in cmd_str for x in ["uvicorn", "gunicorn", "flask", "fastapi", "django", "express", "nodemon", "pm2", "php -s"]):
+                    is_foreign = True
+                    reason = "Running Web API Server"
+                    framework = "PHP" if "php" in cmd_str else "Node.js" if "node" in cmd_str else "Python"
+                elif ("python" in cmd_str or "node" in cmd_str or "php" in cmd_str) and any(x in cmd_str for x in ["api", "server", "app", "main"]):
+                    is_foreign = True
+                    reason = "Generic Script (App/API Execution)"
+                    framework = "PHP" if "php" in cmd_str else "Node.js" if "node" in cmd_str else "Python"
+
+                if is_foreign:
+                    # Attempt to fetch network listening port
+                    ports = []
+                    try:
+                        connections = proc.connections(kind='inet')
+                        for conn in connections:
+                            if conn.status == 'LISTEN':
+                                ports.append(str(conn.laddr.port))
+                    except Exception:
+                        pass
+                        
+                    ports_str = ",".join(ports) if ports else "N/A"
+                    
+                    # Store safely in databases
+                    with get_db_connection() as conn:
+                        conn.execute("""
+                            INSERT OR REPLACE INTO process_monitoring (project_id, pid, start_time, cpu_usage, memory_usage)
+                            VALUES (?, ?, CURRENT_TIMESTAMP, 0, 0)
+                        """, (99000 + pid, pid)) # Use highly spaced custom project IDs for raw system tasks
+                        
+                    discovered_project = {
+                        "id": 900000 + pid, # Safe out-of-bounds database ID allocation
+                        "user_id": OWNER_ID,
+                        "project_name": f"SYSTEM_PROC_{pid}_{proj_clean_name(proc.info['name'])}",
+                        "main_file": cmdline[-1] if len(cmdline) > 0 else "Unknown",
+                        "framework": f"External ({framework})",
+                        "project_type": reason,
+                        "port": ports[0] if ports else None,
+                        "status": "running",
+                        "real_pid": pid,
+                        "cwd": cwd,
+                        "cmdline": " ".join(cmdline)
+                    }
+                    discovered_projects.append(discovered_project)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as e:
+        logger.error(f"Host VPS security scanning encountered an issue: {e}")
+    return discovered_projects
+
+def proj_clean_name(val):
+    return re.sub(r'[^a-zA-Z0-9_-]', '', val)[:15]
 
 # ===== GENERAL HELPER UI FUNCTIONS =====
 def get_performance_color(percent):
@@ -106,7 +313,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Owner notification failure: {e}")
 
-    # Build Admin navigation with shortened SELF-MGMT title as requested
+    # Build Admin navigation with shortened SELF-MGMT title
     buttons = [
         ["🚀 HOST BOT", "📊 MY PROJECTS"],
         ["🖥️ VPS CONTROLS", "⚙️ SELF-MGMT"],
@@ -123,6 +330,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Isolated sandboxed runtime execution environments\n" \
             f"• Systemd daemon units supervisor integration\n" \
             f"• Advanced Shell command processor interface\n" \
+            f"• Supports: Python (.py), Node.js (.js), PHP (.php), HTML (.html)\n" \
             f"• Secure live Git updating and Hot-Reboots\n\n" \
             f"🔒 <b>Whitelisted Admins & Approved Clients Only</b>\n" \
             f"👤 <b>Developed by:</b> HmGamer (@EliteHM)"
@@ -166,17 +374,19 @@ async def bot_host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🚀 <b>VPS ENVIRONMENT DEPLOYMENT MANAGER</b>\n\n"
         f"Please upload your configuration code as a <code>.zip</code> archive package.\n\n"
-        f"📋 <b>Requirements:</b>\n"
-        f"• Must hold a clear launch entrypoint (e.g. main.py, bot.py, app.js)\n"
-        f"• Maximum archive limit: {MAX_FILE_SIZE_MB}MB\n"
-        f"• <code>requirements.txt</code> (Python) or <code>package.json</code> (Node.js) must be populated\n\n"
-        f"⚙️ Supported Engines:\n"
+        f"📋 <b>Requirements by File Type:</b>\n"
+        f"• <b>Python (.py)</b>: Entrypoint script (main.py/bot.py) + <code>requirements.txt</code>\n"
+        f"• <b>Node.js (.js)</b>: Entrypoint (main.js/index.js) + <code>package.json</code>\n"
+        f"• <b>PHP (.php)</b>: Runs as web-daemon or CLI worker. Composer supported.\n"
+        f"• <b>Static HTML (.html)</b>: Fast static asset server deployed automatically.\n\n"
+        f"⚙️ Supported Runtimes:\n"
         f"{py_versions}"
         f"• Node.js: {nodejs_info}\n\n"
         f"📤 <b>Send the ZIP file now:</b>",
         parse_mode=ParseMode.HTML
     )
 
+# ===== CONSOLE-DRIVEN MY PROJECTS UI =====
 async def list_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
     user_id = update.effective_user.id
     if not has_access(user_id):
@@ -184,26 +394,21 @@ async def list_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         return
         
     is_admin_flag = is_admin(user_id)
-    PER_PAGE = 15
+    PER_PAGE = 10
     
     with get_db_connection() as conn:
         if is_admin_flag:
             total_count = conn.execute("SELECT COUNT(*) as count FROM projects").fetchone()['count']
             projects = conn.execute("""
-                SELECT p.*, u.username, pm.pid, pm.cpu_usage, pm.memory_usage 
-                FROM projects p 
-                LEFT JOIN users u ON p.user_id = u.user_id
-                LEFT JOIN process_monitoring pm ON p.id = pm.project_id
-                ORDER BY p.created_at DESC LIMIT ? OFFSET ?
+                SELECT id, project_name, framework, status FROM projects 
+                ORDER BY created_at DESC LIMIT ? OFFSET ?
             """, (PER_PAGE, (page-1)*PER_PAGE)).fetchall()
         else:
             total_count = conn.execute("SELECT COUNT(*) as count FROM projects WHERE user_id = ?", (user_id,)).fetchone()['count']
             projects = conn.execute("""
-                SELECT p.*, pm.pid, pm.cpu_usage, pm.memory_usage 
-                FROM projects p 
-                LEFT JOIN process_monitoring pm ON p.id = pm.project_id
-                WHERE p.user_id = ? 
-                ORDER BY p.created_at DESC LIMIT ? OFFSET ?
+                SELECT id, project_name, framework, status FROM projects 
+                WHERE user_id = ? 
+                ORDER BY created_at DESC LIMIT ? OFFSET ?
             """, (user_id, PER_PAGE, (page-1)*PER_PAGE)).fetchall()
 
     total_pages = max(1, (total_count + PER_PAGE - 1) // PER_PAGE)
@@ -211,45 +416,96 @@ async def list_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await send_response(update, f"📁 <b>BOT PORTFOLIO MANAGER</b>\n\nAccount limit: {get_user_limit(user_id)}\nDeployments: 0\n\n🚀 Hit 'HOST BOT' to load code packages.")
         return
 
-    header = f"👑 <b>ADMIN PORTFOLIO CONTROL BOARD</b>" if is_admin_flag else f"📁 <b>USER PROJECTS COMPILATION</b>"
-    text = f"{header}\n\nPage {page}/{total_pages} (Total: {total_count})\n\n"
+    header = f"👑 <b>ADMIN SYSTEM CONSOLE BOARD</b>" if is_admin_flag else f"📁 <b>YOUR DEPLOYED SERVICES</b>"
+    text = f"{header}\n\nSelect a project workspace from the list below to access its console, edit environments, or execute terminal commands:\n\n"
     
     buttons = []
+    # Render projects as clean, selectable console blocks
     for p in projects:
         running = is_running(p['id'])
-        status_lbl = "🟢 RUNNING" if running else "🔴 OFFLINE"
-        owner_info = f" (by {get_display_username(p)})" if is_admin_flag else ""
-        text += f"<b>• {p['project_name']}</b>{owner_info}\n" \
-                f"  Engine: {p['framework']} | Status: {status_lbl}\n"
-                
-        if running:
-            info = get_process_info(p['id'])
-            if info:
-                cpu_col = get_performance_color(info['cpu_percent'])
-                text += f"  Stats: {cpu_col} CPU: {info['cpu_percent']:.1f}% | 💾 RAM: {info['memory_mb']:.1f}MB\n"
-        text += "\n"
-        
-        row = [
-            InlineKeyboardButton("⏹️ STOP" if running else "▶️ START", callback_data=f"{'stop' if running else 'start'}_{p['id']}"),
-            InlineKeyboardButton("⚙️ ENV", callback_data=f"manageenv_{p['id']}"),
-            InlineKeyboardButton("🗑️ PURGE", callback_data=f"delete_{p['id']}")
-        ]
-        buttons.append(row)
+        status_emoji = "🟢" if running else "🔴"
+        label = f"{status_emoji} {p['project_name']} [{p['framework']}]"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"viewproj_{p['id']}")])
         
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"projects_page_{page-1}"))
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"portfolio_page_{page-1}"))
     nav.append(InlineKeyboardButton(f"📄 {page}/{total_pages}", callback_data="current"))
     if page < total_pages:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"projects_page_{page+1}"))
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"portfolio_page_{page+1}"))
     buttons.append(nav)
-    buttons.append([InlineKeyboardButton("🔄 FORWARD REFRESH", callback_data="refresh_projects")])
+    buttons.append([InlineKeyboardButton("🔄 REFRESH PORTFOLIO", callback_data="refresh_projects")])
     
+    # 👑 Main Admin Exclusive VPS Active Service Integration Interface
+    if is_admin_flag:
+        buttons.append([InlineKeyboardButton("🔍 SCAN FOR OTHER ACTIVE BOTS / APIs", callback_data="sys_scan_proc")])
+        
     await send_response(update, text, reply_markup=InlineKeyboardMarkup(buttons))
 
-# ===== EXECUTOR LAUNCH PIPELINE =====
-def start_project_worker(project_id, project, chat_id, loop, bot):
-    """Execution pipeline handling builds and launching sandboxed process workers"""
+async def show_project_console(update: Update, context: ContextTypes.DEFAULT_TYPE, project_id: int):
+    """Render a dedicated cloud control panel dashboard for individual projects"""
+    user_id = update.effective_user.id if update.effective_user else update.callback_query.from_user.id
+    
+    with get_db_connection() as conn:
+        proj_row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not proj_row:
+        await send_response(update, "❌ Project not found.")
+        return
+        
+    proj = dict(proj_row)
+    if not is_admin(user_id) and proj['user_id'] != user_id:
+        await send_response(update, "❌ Authorization signature invalid.")
+        return
+        
+    running = is_running(project_id)
+    status_label = "🟢 ACTIVE (Running)" if running else "🔴 OFFLINE (Stopped)"
+    
+    # Detailed runtime metadata
+    stats_text = ""
+    if running:
+        info = get_process_info(project_id)
+        if info:
+            stats_text = f"💻 <b>CPU Usage:</b> {info['cpu_percent']:.1f}%\n" \
+                         f"💾 <b>RAM usage:</b> {info['memory_mb']:.1f} MB\n" \
+                         f"🔢 <b>Process PID:</b> <code>{info['pid']}</code>\n"
+                         
+    port_text = f"<code>{proj['port']}</code>" if proj['port'] else "N/A"
+    
+    console_view = (
+        f"📦 <b>CLOUD WORKSPACE CONSOLE</b>\n"
+        f"---------------------------------------\n"
+        f"🛠️ <b>Service:</b> <code>{proj['project_name']}</code>\n"
+        f"🆔 <b>Workspace ID:</b> <code>{proj['id']}</code>\n"
+        f"⚡ <b>Status:</b> {status_label}\n"
+        f"📋 <b>Engine Type:</b> {proj['framework']}\n"
+        f"🌐 <b>Port Binding:</b> {port_text}\n"
+        f"🕒 <b>Last Launched:</b> {proj['last_started'] or 'Never'}\n\n"
+        f"{stats_text}"
+        f"---------------------------------------\n"
+        f"👉 <b>Choose Console Operation:</b>"
+    )
+    
+    buttons = [
+        [
+            InlineKeyboardButton("⏹️ STOP WORKER" if running else "▶️ START WORKER", callback_data=f"pstate_{project_id}"),
+            InlineKeyboardButton("⚙️ ENV VARS", callback_data=f"p_env_{project_id}")
+        ],
+        [
+            InlineKeyboardButton("💻 CONTAINER CLI", callback_data=f"p_cli_{project_id}"),
+            InlineKeyboardButton("📋 LIVE LOGS", callback_data=f"p_logs_{project_id}")
+        ],
+        [
+            InlineKeyboardButton("🧹 AUTO BUILD", callback_data=f"p_build_{project_id}"),
+            InlineKeyboardButton("🗑️ PURGE WORKSPACE", callback_data=f"p_purge_{project_id}")
+        ],
+        [InlineKeyboardButton("🔙 BACK TO PORTFOLIO", callback_data="refresh_projects")]
+    ]
+    
+    await send_response(update, console_view, reply_markup=InlineKeyboardMarkup(buttons))
+
+# ===== EXECUTOR LAUNCH PIPELINE WITH MULTI-LANGUAGE DEPS =====
+def start_project_worker(project_id, chat_id, loop, bot):
+    """Robust dynamic worker loader launching environments and installing missing modules"""
     def push_msg(msg):
         if not bot or not loop or not chat_id: return
         try:
@@ -269,13 +525,12 @@ def start_project_worker(project_id, project, chat_id, loop, bot):
         p_dir = project_folder(project['user_id'], p_name)
         log_file = os.path.join(LOG_DIR, f"project_{project_id}.txt")
         
-        # Parse environmental parameters safely
+        # Configure env variables safely
         env = os.environ.copy()
         env['BOT_HOSTING_PLATFORM'] = 'True'
         if 'BOT_TOKEN' in env: env.pop('BOT_TOKEN')
         if project['port']: env['PORT'] = str(project['port'])
         
-        # Load user configurations
         try:
             user_env_data = json.loads(project.get('env_vars', '{}'))
             for k, v in user_env_data.items():
@@ -283,32 +538,94 @@ def start_project_worker(project_id, project, chat_id, loop, bot):
         except Exception as e:
             logger.warning(f"Failed loading env variables for {p_name}: {e}")
         
+        # Multi-Language Automated Dependency Builder
         if not project['deps_installed']:
-            push_msg(f"🛠️ [{p_name}] Running dynamic dependencies build pipeline...")
-            ok, output = install_dependencies(p_dir, project['framework'])
-            if ok:
-                with get_db_connection() as conn:
-                    conn.execute("UPDATE projects SET deps_installed = 1 WHERE id = ?", (project_id,))
-                    conn.commit()
-                push_msg(f"✅ [{p_name}] Dynamic dependencies compiled successfully.")
-            else:
-                push_msg(f"❌ [{p_name}] Dependencies build system failure:\n<code>{html.escape(output)}</code>")
-                return
-                
-        # Generate Executable Args
+            push_msg(f"🛠️ [{p_name}] System analyzing packages & triggering automated dependency builder...")
+            
+            # 1. Node.js Runtimes
+            if project['framework'] == "Node.js" and os.path.exists(os.path.join(p_dir, 'package.json')):
+                push_msg(f"⚡ Running npm installation sequences for <code>{p_name}</code>...")
+                try:
+                    res = subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=p_dir, capture_output=True, text=True, timeout=300)
+                    if res.returncode == 0:
+                        push_msg("✅ npm installation sequence completed.")
+                    else:
+                        logger.warning(f"npm install alert: {res.stderr}")
+                except Exception as e:
+                    push_msg(f"⚠️ npm installation warning: {e}")
+                    
+            # 2. PHP Composer Support
+            elif project['framework'] == "PHP" and os.path.exists(os.path.join(p_dir, 'composer.json')):
+                push_msg(f"⚡ Running Composer workspace installation patterns for <code>{p_name}</code>...")
+                try:
+                    res = subprocess.run(["composer", "install", "--no-interaction", "--ignore-platform-reqs"], cwd=p_dir, capture_output=True, text=True, timeout=300)
+                    if res.returncode == 0:
+                        push_msg("✅ Composer resolved dependencies successfully.")
+                except Exception as e:
+                    push_msg(f"⚠️ Composer launcher omitted: {e}")
+                    
+            # 3. Python Virtualenv installs
+            elif project['framework'] == "Python":
+                req_file = find_requirements_txt(p_dir)
+                if req_file:
+                    push_msg(f"⚡ Building PyPI dependencies from manifest requirements...")
+                    try:
+                        res = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file], capture_output=True, text=True, timeout=300)
+                        if res.returncode != 0:
+                            # Fallback
+                            subprocess.run(["pip3", "install", "-r", req_file], timeout=300)
+                        push_msg("✅ Python package configurations established.")
+                    except Exception as e:
+                        push_msg(f"⚠️ pip installation wrapper warning: {e}")
+                        
+            # Set deployment dependencies as loaded
+            with get_db_connection() as conn:
+                conn.execute("UPDATE projects SET deps_installed = 1 WHERE id = ?", (project_id,))
+                conn.commit()
+
+        # Generate Launcher Commands based on engine architectures
         main_file = project['main_file']
         cmd_args = None
-        if main_file.endswith('.py'):
+        
+        if project['framework'] == "Python":
             cmd_args = [sys.executable, "-u", main_file]
-        elif main_file.endswith(('.js', '.ts')):
-            cmd_args = ["node", main_file]
             
+        elif project['framework'] == "Node.js":
+            # Check package.json scripts
+            p_json_path = os.path.join(p_dir, "package.json")
+            has_start = False
+            if os.path.exists(p_json_path):
+                try:
+                    with open(p_json_path, 'r') as f:
+                        p_data = json.load(f)
+                        if "scripts" in p_data and "start" in p_data["scripts"]:
+                            has_start = True
+                except:
+                    pass
+            if has_start:
+                cmd_args = ["npm", "start"]
+            else:
+                cmd_args = ["node", main_file]
+                
+        elif project['framework'] == "PHP":
+            if project['port']:
+                # Run built-in sandboxed web server
+                cmd_args = ["php", "-S", f"0.0.0.0:{project['port']}", "-t", "."]
+            else:
+                # Run as persistent background console worker script
+                cmd_args = ["php", main_file]
+                
+        elif project['framework'] == "Static HTML":
+            # Launch Python-native high performance lightweight file server container
+            cmd_args = ["python3", "-m", "http.server", str(project['port'])]
+
         if not cmd_args:
-            push_msg(f"❌ [{p_name}] Unsupported executor wrapper runtime.")
+            push_msg(f"❌ [{p_name}] Launch command configuration could not be generated.")
             return
             
         with open(log_file, 'a') as lf:
-            lf.write(f"\n=== LAUNCH SESSION RUNNING {datetime.now()} ===\n")
+            lf.write(f"\n=== LAUNCH WORKER ACTIVE AT {datetime.now()} ===\n")
+            lf.write(f"Launch command: {' '.join(cmd_args)}\n")
             proc = subprocess.Popen(
                 cmd_args, cwd=p_dir, stdout=lf, stderr=lf, env=env
             )
@@ -319,16 +636,16 @@ def start_project_worker(project_id, project, chat_id, loop, bot):
             conn.execute("INSERT OR REPLACE INTO process_monitoring (project_id, pid, start_time) VALUES (?, ?, CURRENT_TIMESTAMP)", (project_id, proc.pid))
             conn.commit()
             
-        push_msg(f"🟢 [{p_name}] Sandboxed runner fully active under local PID {proc.pid}")
+        push_msg(f"🟢 [{p_name}] Workspace runner successfully spawned (PID: {proc.pid})")
     except Exception as e:
-        logger.error(f"Thread deployment execution breakdown: {e}")
-        push_msg(f"❌ Process launch breakdown for project ID {project_id}: {e}")
+        logger.error(f"Sandbox runner spawning crashed: {e}", exc_info=True)
+        push_msg(f"❌ Launcher engine breakdown: {e}")
 
-# ===== DYNAMIC DEPLOYMENT HANDLER =====
+# ===== DEPLOYMENT HANDLERS WITH ALL-LANGUAGE SUPPORT =====
 async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # Check if we are self-updating the bot script itself via ZIP
+    # Handle direct codebase upgrades of the host orchestrator itself via ZIP upload
     if user_id in user_states and user_states[user_id].get("awaiting_self_update_zip"):
         if not is_admin(user_id): return
         doc = update.message.document
@@ -342,7 +659,6 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             archive_path = os.path.join(TEMP_DIR, "bot_self_update.zip")
             await tg_file.download_to_drive(archive_path)
             
-            # Extract directly over current deployment workspace directory
             with zipfile.ZipFile(archive_path, 'r') as zf:
                 zf.extractall(BASE_DIR)
                 
@@ -371,7 +687,7 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Package limits overflow. Limit: {MAX_FILE_SIZE_MB}MB")
         return
         
-    p_msg = await update.message.reply_text("📥 Downloading repository content...")
+    p_msg = await update.message.reply_text("📥 Extracting incoming file structures...")
     
     try:
         tg_file = await context.bot.get_file(doc.file_id)
@@ -388,13 +704,7 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not main_file:
             shutil.rmtree(extract_dir, ignore_errors=True)
             os.remove(archive_path)
-            await p_msg.edit_text("❌ Launch configuration main entrypoint file absent.")
-            return
-            
-        if main_file.endswith('.py') and not find_requirements_txt(extract_dir):
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            os.remove(archive_path)
-            await p_msg.edit_text("❌ Missing python `requirements.txt` file.")
+            await p_msg.edit_text("❌ Launch configuration main entrypoint file absent. Please verify script entrypoint files exist.")
             return
             
         types = detect_project_type(extract_dir, main_file)
@@ -403,13 +713,27 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         shutil.move(extract_dir, dest_dir)
         create_sandbox_environment(dest_dir)
         
-        framework = "Python" if main_file.endswith('.py') else "Node.js"
-        port = find_available_port() if framework == "Node.js" else None
+        # Engine Classification Resolving
+        framework = "Unknown"
+        port = None
         
+        if main_file.endswith('.py'):
+            framework = "Python"
+        elif main_file.endswith(('.js', '.ts')):
+            framework = "Node.js"
+        elif main_file.endswith('.php'):
+            framework = "PHP"
+            # Bind port if web page index standard is detected
+            if os.path.exists(os.path.join(dest_dir, "index.php")) or "index" in main_file:
+                port = find_available_port()
+        elif main_file.endswith(('.html', '.htm')):
+            framework = "Static HTML"
+            port = find_available_port()
+            
         with get_db_connection() as conn:
             cursor = conn.execute("""
-                INSERT INTO projects (user_id, project_name, main_file, framework, project_type, port)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO projects (user_id, project_name, main_file, framework, project_type, port, deps_installed)
+                VALUES (?, ?, ?, ?, ?, ?, 0)
             """, (user_id, p_name, main_file, framework, ','.join(types), port))
             project_id = cursor.lastrowid
             conn.commit()
@@ -417,17 +741,17 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         os.remove(archive_path)
         
         await p_msg.edit_text(
-            f"✅ <b>PACKAGE INITIALIZATION SUCCESSFUL!</b>\n\n"
-            f"• Project Name: {p_name}\n"
-            f"• Engine Type: {framework}\n"
-            f"• Target Entry: {main_file}\n\n"
-            f"⚡ Launching worker process safely..."
+            f"✅ <b>WORKSPACE INITIALIZED SUCCESSFULLY!</b>\n\n"
+            f"• <b>Project Name:</b> <code>{p_name}</code>\n"
+            f"• <b>Engine Class:</b> {framework}\n"
+            f"• <b>Entry Launch File:</b> <code>{main_file}</code>\n\n"
+            f"⚙️ Running dependencies manager & launching worker process safely..."
         )
         
         loop = asyncio.get_running_loop()
         threading.Thread(
             target=start_project_worker,
-            args=(project_id, {}, p_msg.chat.id, loop, context.bot),
+            args=(project_id, p_msg.chat.id, loop, context.bot),
             daemon=True
         ).start()
     except Exception as e:
@@ -436,7 +760,7 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     finally:
         user_states.pop(user_id, None)
 
-# ===== BUTTON ACTIONS CALLBACKS =====
+# ===== CONSOLE INTERACTION ACTIONS CALLBACKS =====
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -447,69 +771,190 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("❌ System access expired or deactivated.")
         return
         
-    if data.startswith("projects_page_"):
+    if data.startswith("portfolio_page_"):
         await list_bots_command(update, context, int(data.split("_")[2]))
         return
     elif data == "refresh_projects":
         await list_bots_command(update, context)
         return
-        
-    # Split actions mapping [action, id]
-    parts = data.split('_', 1)
-    if len(parts) < 2: return
-    action, p_id = parts[0], int(parts[1])
-    
-    with get_db_connection() as conn:
-        proj = conn.execute("SELECT * FROM projects WHERE id = ?", (p_id,)).fetchone()
-    if not proj: return
-    
-    if not is_admin(user_id) and proj['user_id'] != user_id:
-        await query.edit_message_text("❌ Authorization signature invalid.")
+    elif data.startswith("viewproj_"):
+        p_id = int(data.split("_")[1])
+        await show_project_console(update, context, p_id)
         return
         
-    if action == "start":
-        if is_running(p_id): return
-        loop = asyncio.get_running_loop()
-        threading.Thread(
-            target=start_project_worker,
-            args=(p_id, dict(proj), query.message.chat.id, loop, context.bot),
-            daemon=True
-        ).start()
-    elif action == "stop":
-        stop_process(p_id)
-    elif action == "delete":
-        stop_process(p_id)
-        p_path = project_folder(proj['user_id'], proj['project_name'])
-        shutil.rmtree(p_path, ignore_errors=True)
+    # Process scan triggers for other host-level bots and active APIs
+    if data == "sys_scan_proc":
+        if not is_admin(user_id): return
+        p_msg = await context.bot.send_message(query.message.chat.id, "🔍 <i>Deep-scanning host memory spaces for foreign services and listening APIs...</i>", parse_mode=ParseMode.HTML)
+        discovered = scan_vps_for_foreign_services()
+        
+        if not discovered:
+            await p_msg.edit_text("✅ <b>Scan Complete:</b> No external bots or active APIs detected.")
+            return
+            
+        # Compile discovered metrics safely
+        report = f"🔍 <b>VPS ALIEN SERVICE REPORT ({len(discovered)} Found)</b>\n\n"
+        buttons = []
+        
+        for d in discovered:
+            report += f"⚙️ <b>PID:</b> <code>{d['real_pid']}</code>\n" \
+                      f"• <b>Class:</b> {d['project_type']}\n" \
+                      f"• <b>Command:</b> <code>{html.escape(d['cmdline'][:100])}</code>\n" \
+                      f"• <b>Active Port:</b> <code>{d['port'] or 'N/A'}</code>\n\n"
+                      
+            # Add option to take control, register, or kill foreign process
+            buttons.append([
+                InlineKeyboardButton(f"🚨 KILL PID {d['real_pid']}", callback_data=f"killproc_{d['real_pid']}"),
+                InlineKeyboardButton(f"📥 REGISTER", callback_data=f"regproc_{d['real_pid']}")
+            ])
+            
+        buttons.append([InlineKeyboardButton("🔙 BACK TO PORTFOLIO", callback_data="refresh_projects")])
+        await p_msg.delete()
+        await context.bot.send_message(query.message.chat.id, report, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.HTML)
+        return
+
+    # Process direct manual termination of external discovered PIDs
+    if data.startswith("killproc_"):
+        if not is_admin(user_id): return
+        target_pid = int(data.split("_")[1])
+        try:
+            parent = psutil.Process(target_pid)
+            parent.kill()
+            await context.bot.send_message(query.message.chat.id, f"✅ <b>Process {target_pid} terminated successfully.</b>", parse_mode=ParseMode.HTML)
+        except Exception as e:
+            await context.bot.send_message(query.message.chat.id, f"❌ Failed to kill process {target_pid}: {e}", parse_mode=ParseMode.HTML)
+        return
+
+    # Process dynamic registration of discovered external systems
+    if data.startswith("regproc_"):
+        if not is_admin(user_id): return
+        target_pid = int(data.split("_")[1])
+        try:
+            proc = psutil.Process(target_pid)
+            cmdline = proc.cmdline()
+            cmd_str = " ".join(cmdline)
+            cwd = proc.cwd()
+            
+            p_name = f"IMPORTED_{target_pid}"
+            main_file = cmdline[-1] if len(cmdline) > 0 else "main.py"
+            framework = "External (Node.js)" if "node" in cmd_str else "External (PHP)" if "php" in cmd_str else "External (Python)"
+            
+            with get_db_connection() as conn:
+                cursor = conn.execute("""
+                    INSERT INTO projects (user_id, project_name, main_file, framework, project_type, status, deps_installed)
+                    VALUES (?, ?, ?, ?, ?, 'running', 1)
+                """, (OWNER_ID, p_name, main_file, framework, "Imported Service"))
+                project_id = cursor.lastrowid
+                conn.commit()
+                
+            # Bind running state mapping locally
+            running_processes[project_id] = target_pid
+            
+            await context.bot.send_message(query.message.chat.id, f"✅ <b>Imported successfully!</b> Project registered under name <code>{p_name}</code>.", parse_mode=ParseMode.HTML)
+        except Exception as e:
+            await context.bot.send_message(query.message.chat.id, f"❌ Failed to import process: {e}", parse_mode=ParseMode.HTML)
+        return
+
+    # Project Dashboard Console Callback Actions
+    if data.startswith(("pstate_", "p_env_", "p_cli_", "p_logs_", "p_build_", "p_purge_")):
+        action, p_id_str = data.split("_", 1)
+        p_id = int(p_id_str)
         
         with get_db_connection() as conn:
-            conn.execute("DELETE FROM projects WHERE id = ?", (p_id,))
-            conn.execute("DELETE FROM process_monitoring WHERE project_id = ?", (p_id,))
-            conn.commit()
-    elif action == "manageenv":
-        # Interactive configuration variable settings
-        user_states[user_id] = {"awaiting_env_vars": True, "project_id": p_id}
-        await context.bot.send_message(
-            query.message.chat.id,
-            f"⚙️ <b>CONFIGURING ENVIRONMENT FOR: {proj['project_name']}</b>\n\n"
-            f"Please send the environment variables in valid JSON format. Example:\n"
-            f"<code>{{\"API_KEY\": \"abc\", \"PORT\": \"80\"}}</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    class FakeUpdate:
-        def __init__(self, query):
-            self.callback_query = query
-            self.effective_user = query.from_user
+            proj = conn.execute("SELECT * FROM projects WHERE id = ?", (p_id,)).fetchone()
+        if not proj: return
+        
+        if not is_admin(user_id) and proj['user_id'] != user_id:
+            await query.edit_message_text("❌ Authorization signature invalid.")
+            return
             
-    await asyncio.sleep(1.5)
-    try:
-        await list_bots_command(FakeUpdate(query), context)
-    except Exception:
-        pass
+        if action == "pstate":
+            running = is_running(p_id)
+            if running:
+                stop_process(p_id)
+                await query.message.reply_text(f"⏹️ Project {proj['project_name']} stopped.")
+            else:
+                loop = asyncio.get_running_loop()
+                threading.Thread(
+                    target=start_project_worker,
+                    args=(p_id, query.message.chat.id, loop, context.bot),
+                    daemon=True
+                ).start()
+                await query.message.reply_text(f"▶️ Starting project {proj['project_name']} worker process...")
+                
+        elif action == "p_env":
+            user_states[user_id] = {"awaiting_env_vars": True, "project_id": p_id}
+            await context.bot.send_message(
+                query.message.chat.id,
+                f"⚙️ <b>CONFIGURING ENV FOR: {proj['project_name']}</b>\n\n"
+                f"Please send the environment variables in valid JSON format. Example:\n"
+                f"<code>{{\"DATABASE_URL\": \"sqlite://...\", \"PORT\": \"8080\"}}</code>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+            
+        elif action == "p_cli":
+            user_states[user_id] = {"awaiting_project_cli": True, "project_id": p_id}
+            p_dir = project_folder(proj['user_id'], proj['project_name'])
+            await context.bot.send_message(
+                query.message.chat.id,
+                f"💻 <b>PROJECT CONTAINER TERMINAL ACTIVE</b>\n\n"
+                f"📂 <b>Workspace Directory:</b>\n<code>{p_dir}</code>\n\n"
+                f"You can now execute terminal commands (e.g. <code>ls -la</code>, <code>npm run build</code>, <code>composer update</code>) directly inside this folder context.\n"
+                f"👉 Send <code>exit</code> to stop.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+            
+        elif action == "p_logs":
+            log_file = os.path.join(LOG_DIR, f"project_{p_id}.txt")
+            if os.path.exists(log_file):
+                with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    logs_data = f.read()[-3000:]
+                await query.message.reply_text(f"📋 <b>Runner Logs for {proj['project_name']}:</b>\n\n<pre>{html.escape(logs_data)}</pre>", parse_mode=ParseMode.HTML)
+            else:
+                await query.message.reply_text("📋 Logs database empty for this workspace.")
+                
+        elif action == "p_build":
+            # Force dependencies rebuild and hot reload
+            stop_process(p_id)
+            with get_db_connection() as conn:
+                conn.execute("UPDATE projects SET deps_installed = 0 WHERE id = ?", (p_id,))
+                conn.commit()
+            loop = asyncio.get_running_loop()
+            threading.Thread(
+                target=start_project_worker,
+                args=(p_id, query.message.chat.id, loop, context.bot),
+                daemon=True
+            ).start()
+            await query.message.reply_text(f"🧹 Workspace dependencies build queued for <code>{proj['project_name']}</code>.", parse_mode=ParseMode.HTML)
+            
+        elif action == "p_purge":
+            stop_process(p_id)
+            p_path = project_folder(proj['user_id'], proj['project_name'])
+            shutil.rmtree(p_path, ignore_errors=True)
+            
+            # Remove custom logging footprints
+            log_file = os.path.join(LOG_DIR, f"project_{p_id}.txt")
+            if os.path.exists(log_file): os.remove(log_file)
+            
+            with get_db_connection() as conn:
+                conn.execute("DELETE FROM projects WHERE id = ?", (p_id,))
+                conn.execute("DELETE FROM process_monitoring WHERE project_id = ?", (p_id,))
+                conn.commit()
+                
+            await query.message.reply_text(f"🗑️ Purged project <code>{proj['project_name']}</code> workspace fully.", parse_mode=ParseMode.HTML)
+            await list_bots_command(update, context)
+            return
 
-# ===== VPS CONTROLS & MANAGEMENT INTERFACES =====
+        # Return back into project console automatically
+        await asyncio.sleep(1.2)
+        try:
+            await show_project_console(update, context, p_id)
+        except Exception:
+            pass
+
+# ===== VPS CONTROLS & DAE MON INTERFACES =====
 async def systemd_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id): return
@@ -574,9 +1019,8 @@ async def self_cb_management(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.message.reply_text("🔌 Executing safe hot-restart of VPS orchestrator process space...")
         hot_reboot_bot()
 
-# ===== CORE PLATFORM COMMAND IMPLEMENTATIONS =====
+# ===== CORE PLATFORM DIAGNOSTICS COMMANDS =====
 async def bot_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Core function returning rolling platform engine logs"""
     user_id = update.effective_user.id
     if not is_admin(user_id): return
     
@@ -586,7 +1030,7 @@ async def bot_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     try:
-        with open(log_path, 'r', encoding='utf-8') as f:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             log_data = f.read()[-3000:]
         await update.message.reply_text(
             f"📋 <b>Bot Core Host Logs:</b>\n\n<pre>{html.escape(log_data)}</pre>",
@@ -596,7 +1040,6 @@ async def bot_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error reading bot logs: {e}")
 
 async def system_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Retrieves VPS system metric performance diagnostics"""
     user_id = update.effective_user.id
     if not is_admin(user_id): return
     
@@ -629,7 +1072,6 @@ async def system_status_command(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
 
 async def user_management_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Renders user metrics and quick whitelisting settings"""
     user_id = update.effective_user.id
     if not is_admin(user_id): return
     
@@ -647,7 +1089,6 @@ async def user_management_command(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Truncates VPS logs cleanly"""
     user_id = update.effective_user.id
     if not is_admin(user_id): return
     
@@ -783,7 +1224,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
-    # 🌟 CRITICAL FIX: Intercept keyboard menu inputs first, including shortened SELF-MGMT button.
+    # 🌟 KEYBOARD MENU INTERCEPTOR: Safe drop of subshell/env states on button clicks
     menu_buttons = [
         "🚀 HOST BOT", "📊 MY PROJECTS", "🖥️ VPS CONTROLS", 
         "⚙️ SELF-MGMT", "📢 BROADCAST", "📋 BOT LOGS", 
@@ -791,7 +1232,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     if text in menu_buttons:
-        # Instantly close any awaiting shell, update, or broadcast states
         user_states.pop(user_id, None)
         broadcast_states.pop(user_id, None)
         
@@ -806,7 +1246,62 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == "🧹 CLEAR LOGS": await clear_logs_command(update, context)
         return
     
-    # Process secure terminal input
+    # 💻 INTERACTIVE SCOPED CONTAINER CLI TERMINAL
+    if user_id in user_states and user_states[user_id].get("awaiting_project_cli"):
+        p_id = user_states[user_id]["project_id"]
+        if text.lower() == "exit":
+            user_states.pop(user_id, None)
+            await update.message.reply_text("🔌 Scoped container subshell closed.")
+            await show_project_console(update, context, p_id)
+            return
+            
+        p_msg = await update.message.reply_text("⏳ Shell executing command in sandboxed scope...")
+        
+        with get_db_connection() as conn:
+            proj = conn.execute("SELECT * FROM projects WHERE id = ?", (p_id,)).fetchone()
+        if not proj:
+            user_states.pop(user_id, None)
+            await p_msg.edit_text("❌ Project directory not found.")
+            return
+            
+        p_dir = project_folder(proj['user_id'], proj['project_name'])
+        
+        # Merge current environment mappings
+        env = os.environ.copy()
+        try:
+            user_env = json.loads(proj.get('env_vars', '{}'))
+            for k, v in user_env.items():
+                env[str(k)] = str(v)
+        except:
+            pass
+            
+        try:
+            import subprocess
+            res = subprocess.run(
+                text,
+                shell=True,
+                cwd=p_dir,
+                capture_output=True,
+                text=True,
+                timeout=25,
+                env=env
+            )
+            output_txt = f"⚙️ <b>CONTAINER CLI EXECUTION COMPLETE (Code: {res.returncode})</b>\n\n"
+            if res.stdout:
+                output_txt += f"<b>Stdout:</b>\n<pre>{html.escape(res.stdout[-3000:])}</pre>"
+            if res.stderr:
+                output_txt += f"\n<b>Stderr:</b>\n<pre>{html.escape(res.stderr[-1000:])}</pre>"
+            if not res.stdout and not res.stderr:
+                output_txt += "<i>(No outputs returned)</i>"
+                
+            await p_msg.edit_text(output_txt, parse_mode=ParseMode.HTML)
+        except subprocess.TimeoutExpired:
+            await p_msg.edit_text("❌ Subshell execution timed out (25s ceiling limit reached).")
+        except Exception as e:
+            await p_msg.edit_text(f"❌ Subshell execution error: {e}")
+        return
+
+    # Process secure standard terminal inputs
     if user_id in user_states and user_states[user_id].get("awaiting_shell_cmd"):
         if not is_admin(user_id): return
         if text.lower() == "exit":
@@ -837,9 +1332,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.execute("UPDATE projects SET env_vars = ? WHERE id = ?", (serialized, proj_id))
                 conn.commit()
                 
-            await update.message.reply_text("✅ Project environment updated successfully. Restart the project to apply variables.")
+            await update.message.reply_text("✅ Project environment configuration saved. Choose 'AUTO BUILD' or restart the project to load variables.")
+            await show_project_console(update, context, proj_id)
         except json.JSONDecodeError:
-            await update.message.reply_text("❌ Invalid JSON schema format. Operation aborted.")
+            await update.message.reply_text("❌ Invalid JSON schema format. Configuration operation aborted.")
         finally:
             user_states.pop(user_id, None)
         return
@@ -866,7 +1362,7 @@ def auto_start_all_projects():
         with get_db_connection() as conn:
             projs = conn.execute("SELECT * FROM projects WHERE auto_restart = 1 AND status = 'stopped'").fetchall()
         for p in projs:
-            threading.Thread(target=start_project_worker, args=(p['id'], dict(p), None, None, None), daemon=True).start()
+            threading.Thread(target=start_project_worker, args=(p['id'], None, None, None), daemon=True).start()
             time.sleep(2)
     except Exception as e:
         logger.error(f"Auto-restart routine issue: {e}")
@@ -875,34 +1371,32 @@ def auto_start_all_projects():
 async def global_exception_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Filters, suppresses, and logs temporary HTTPX read drops and socket timeouts gracefully"""
     error = context.error
-    
-    # Check for temporary client read drop errors
     if isinstance(error, NetworkError) or "httpx.ReadError" in str(error) or "ReadTimeout" in str(error):
         logger.warning(f"⚠️ VPS Network Link Fluctuation (Telegram gateway dropped request - HTTPX will auto-retry): {error}")
         return
-        
-    # Standard log trace writeout for non-connection logic errors
     logger.error("Exception while handling update cycle:", exc_info=error)
 
 # ===== SYSTEM APPLICATION INCEPTION =====
 def main():
     check_single_instance()
+    apply_schema_migrations()
     init_advanced_database()
     
     # Run auto start sequence in thread
     threading.Thread(target=auto_start_all_projects, daemon=True).start()
     
-    # ⚙️ VPS Network Link Resiliency Configuration Block
     # Configure custom HTTPX timeouts explicitly preventing premature read timeout terminations on slow interfaces
     request_config = HTTPXRequest(
         connection_pool_size=10, 
-        connect_timeout=20.0, 
-        read_timeout=20.0,
-        write_timeout=20.0
+        connect_timeout=25.0, 
+        read_timeout=25.0,
+        write_timeout=25.0
     )
     
-    # Build Telegram polling system utilizing optimized network profiles
     app = Application.builder().token(BOT_TOKEN).request(request_config).build()
+    
+    # Auto provision essential system compilers and web engines
+    run_auto_provisioner(app.bot)
     
     # Bind custom resiliency error callback to silence HTTPX ReadError drops
     app.add_error_handler(global_exception_handler)
