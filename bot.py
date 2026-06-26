@@ -882,7 +882,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
     # Project Dashboard Console Callback Actions
     if data.startswith(("pstate_", "p_env_", "p_cli_", "p_logs_", "p_build_", "p_purge_")):
-        action, p_id_str = data.split("_", 1)
+        action, p_id_str = data.rsplit("_", 1)  # Fixed: Use rsplit to properly capture 'p_logs', 'p_cli', 'p_env' with single underscores
         p_id = int(p_id_str)
         
         with get_db_connection() as conn:
@@ -1405,14 +1405,6 @@ def main():
     
     # Run auto start sequence in thread
     threading.Thread(target=auto_start_all_projects, daemon=True).start()
-    
-    # Configure custom HTTPX timeouts explicitly preventing premature read timeout terminations on slow interfaces
-    request_config = HTTPXRequest(
-        connection_pool_size=10, 
-        connect_timeout=25.0, 
-        read_timeout=25.0,
-        write_timeout=25.0
-    )
     
     # Set up the base application with the custom HTTPX connection configurations
     # We construct them via the builder directly so they lazy-initialize within the proper event loop.
