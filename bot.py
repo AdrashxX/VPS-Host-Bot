@@ -20,7 +20,6 @@ try:
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
     from telegram.constants import ParseMode
     from telegram.error import BadRequest, Conflict, InvalidToken, NetworkError
-    from telegram.request import HTTPXRequest
 except ImportError:
     import subprocess
     subprocess.run([sys.executable, "-m", "pip", "install", "python-telegram-bot==20.7"], check=True)
@@ -28,7 +27,6 @@ except ImportError:
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
     from telegram.constants import ParseMode
     from telegram.error import BadRequest, Conflict, InvalidToken, NetworkError
-    from telegram.request import HTTPXRequest
 
 # Internal imports from modular structures
 from config import (
@@ -82,87 +80,84 @@ def apply_schema_migrations():
         logger.error(f"⚠️ Non-critical schema migration check warning: {e}")
 
 # ===== AUTO-PROVISION SYSTEM DEPENDENCIES (PHP, NPM, ETC) =====
-def run_auto_provisioner(bot_obj: Bot):
-    """Checks the host VPS for node, npm, php, composer, and installs missing packages in background"""
-    def provision_worker():
-        time.sleep(5)  # Wait for polling server to start up cleanly
-        missing = []
+async def run_auto_provisioner_async(bot_obj: Bot):
+    """Checks the host VPS for node, npm, php, composer, and installs missing packages in background natively"""
+    await asyncio.sleep(5)  # Wait for polling server to start up cleanly
+    missing = []
+    
+    # Checking executable presence
+    if shutil.which("node") is None or shutil.which("npm") is None:
+        missing.append("nodejs")
+        missing.append("npm")
+    if shutil.which("php") is None:
+        missing.append("php")
+        missing.append("php-cli")
+    if shutil.which("composer") is None:
+        missing.append("composer")
+    if shutil.which("unzip") is None:
+        missing.append("unzip")
         
-        # Checking executable presence
-        if shutil.which("node") is None or shutil.which("npm") is None:
-            missing.append("nodejs")
-            missing.append("npm")
-        if shutil.which("php") is None:
-            missing.append("php")
-            missing.append("php-cli")
-        if shutil.which("composer") is None:
-            missing.append("composer")
-        if shutil.which("unzip") is None:
-            missing.append("unzip")
-            
-        if not missing:
-            logger.info("✅ All essential system compilers and web engines present on host.")
-            return
+    if not missing:
+        logger.info("✅ All essential system compilers and web engines present on host.")
+        return
 
-        # Notify Owner HmGamer that system provisioning has started
+    # Notify Owner HmGamer that system provisioning has started natively
+    try:
+        await bot_obj.send_message(
+            OWNER_ID,
+            f"⚙️ <b>VPS AUTO-PROVISIONER INITIATED</b>\n\n"
+            f"The system detected missing dependencies on your VPS: <code>{', '.join(missing)}</code>.\n"
+            f"⏳ Installing components via apt-get in the background...",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Failed to alert owner of provisioning: {e}")
+
+    try:
+        # Upgrade package index using asynchronous thread delegation (prevents freezing polling loop)
+        await asyncio.to_thread(subprocess.run, ["sudo", "apt-get", "update", "-y"], capture_output=True, check=True)
+        
+        # Install NodeSource repositories if nodejs is missing
+        if "nodejs" in missing:
+            await asyncio.to_thread(subprocess.run, "curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -", shell=True, check=True)
+            
+        # Direct installations
+        install_cmd = ["sudo", "apt-get", "install", "-y", "unzip", "sqlite3"]
+        if "nodejs" in missing:
+            install_cmd.extend(["nodejs"])
+        if "php" in missing:
+            install_cmd.extend(["php", "php-cli", "php-mbstring"])
+            
+        await asyncio.to_thread(subprocess.run, install_cmd, capture_output=True, check=True)
+        
+        # Auto install PHP composer if missing
+        if "composer" in missing:
+            setup_composer_cmd = "curl -sS https://getcomposer.org/installer | php && sudo mv composer.phar /usr/local/bin/composer"
+            await asyncio.to_thread(subprocess.run, setup_composer_cmd, shell=True, check=True)
+
+        # Reload environment variable detections
+        global NODEJS_AVAILABLE
+        from config import check_nodejs_installation
+        NODEJS_AVAILABLE = check_nodejs_installation()
+
+        await bot_obj.send_message(
+            OWNER_ID,
+            f"✅ <b>VPS AUTO-PROVISIONING COMPLETE</b>\n\n"
+            f"All requested components (NodeJS, PHP, Composer, SQLite, Unzip) are now installed and ready to use!",
+            parse_mode=ParseMode.HTML
+        )
+        logger.info("✅ System provisioning complete.")
+    except Exception as e:
+        logger.error(f"Failed during background auto-provisioning: {e}")
         try:
-            asyncio.run(bot_obj.send_message(
+            await bot_obj.send_message(
                 OWNER_ID,
-                f"⚙️ <b>VPS AUTO-PROVISIONER INITIATED</b>\n\n"
-                f"The system detected missing dependencies on your VPS: <code>{', '.join(missing)}</code>.\n"
-                f"⏳ Installing components via apt-get in the background...",
+                f"❌ <b>VPS PROVISIONING EXCEPTION CRASH</b>\n\n"
+                f"Error encountered: <code>{html.escape(str(e))}</code>",
                 parse_mode=ParseMode.HTML
-            ))
-        except Exception as e:
-            logger.error(f"Failed to alert owner of provisioning: {e}")
-
-        try:
-            # Upgrade package index
-            subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True, check=True)
-            
-            # Install NodeSource repositories if nodejs is missing
-            if "nodejs" in missing:
-                subprocess.run("curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -", shell=True, check=True)
-                
-            # Direct installations
-            install_cmd = ["sudo", "apt-get", "install", "-y", "unzip", "sqlite3"]
-            if "nodejs" in missing:
-                install_cmd.extend(["nodejs"])
-            if "php" in missing:
-                install_cmd.extend(["php", "php-cli", "php-mbstring"])
-                
-            subprocess.run(install_cmd, capture_output=True, check=True)
-            
-            # Auto install PHP composer if missing
-            if "composer" in missing:
-                setup_composer_cmd = "curl -sS https://getcomposer.org/installer | php && sudo mv composer.phar /usr/local/bin/composer"
-                subprocess.run(setup_composer_cmd, shell=True, check=True)
-
-            # Reload environment variable detections
-            global NODEJS_AVAILABLE
-            from config import check_nodejs_installation
-            NODEJS_AVAILABLE = check_nodejs_installation()
-
-            asyncio.run(bot_obj.send_message(
-                OWNER_ID,
-                f"✅ <b>VPS AUTO-PROVISIONING COMPLETE</b>\n\n"
-                f"All requested components (NodeJS, PHP, Composer, SQLite, Unzip) are now installed and ready to use!",
-                parse_mode=ParseMode.HTML
-            ))
-            logger.info("✅ System provisioning complete.")
-        except Exception as e:
-            logger.error(f"Failed during background auto-provisioning: {e}")
-            try:
-                asyncio.run(bot_obj.send_message(
-                    OWNER_ID,
-                    f"❌ <b>VPS PROVISIONING EXCEPTION CRASH</b>\n\n"
-                    f"Error encountered: <code>{html.escape(str(e))}</code>",
-                    parse_mode=ParseMode.HTML
-                ))
-            except:
-                pass
-
-    threading.Thread(target=provision_worker, daemon=True).start()
+            )
+        except:
+            pass
 
 # ===== VPS ACTIVE PORTS & PROCESS SCANNER (FOREIGN BOTS/APIs) =====
 def scan_vps_for_foreign_services():
@@ -177,12 +172,10 @@ def scan_vps_for_foreign_services():
         
         for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'cwd']):
             try:
-                pinfo = proc.info
                 pid = p_id = pinfo = pinfo_cmd = None
                 
                 # Retrieve process metadata
                 pid = u_pid = p_id = p_id_val = p_info_val = pinfo = u_pid = u_p_id = u_p = p = p_pid_val = p_id_val = None
-                
                 pid = u_pid = p_id = p_id_str = p_val = p_row = p_row_obj = p_row_data = p_row_val = p_row_val_str = p_row_val_data = None
                 
                 pid = p_id = proc.pid
@@ -568,7 +561,7 @@ def start_project_worker(project_id, chat_id, loop, bot):
             elif project['framework'] == "Python":
                 req_file = find_requirements_txt(p_dir)
                 if req_file:
-                    push_msg(f"⚡ Building PyPI dependencies from manifest requirements...")
+                    push_msg(f"⚡ Building PyPI dependencies from requirements.txt...")
                     try:
                         res = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file], capture_output=True, text=True, timeout=300)
                         if res.returncode != 0:
@@ -591,7 +584,6 @@ def start_project_worker(project_id, chat_id, loop, bot):
             cmd_args = [sys.executable, "-u", main_file]
             
         elif project['framework'] == "Node.js":
-            # Check package.json scripts
             p_json_path = os.path.join(p_dir, "package.json")
             has_start = False
             if os.path.exists(p_json_path):
@@ -609,14 +601,11 @@ def start_project_worker(project_id, chat_id, loop, bot):
                 
         elif project['framework'] == "PHP":
             if project['port']:
-                # Run built-in sandboxed web server
                 cmd_args = ["php", "-S", f"0.0.0.0:{project['port']}", "-t", "."]
             else:
-                # Run as persistent background console worker script
                 cmd_args = ["php", main_file]
                 
         elif project['framework'] == "Static HTML":
-            # Launch Python-native high performance lightweight file server container
             cmd_args = ["python3", "-m", "http.server", str(project['port'])]
 
         if not cmd_args:
@@ -723,7 +712,6 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             framework = "Node.js"
         elif main_file.endswith('.php'):
             framework = "PHP"
-            # Bind port if web page index standard is detected
             if os.path.exists(os.path.join(dest_dir, "index.php")) or "index" in main_file:
                 port = find_available_port()
         elif main_file.endswith(('.html', '.htm')):
@@ -792,7 +780,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             await p_msg.edit_text("✅ <b>Scan Complete:</b> No external bots or active APIs detected.")
             return
             
-        # Compile discovered metrics safely
         report = f"🔍 <b>VPS ALIEN SERVICE REPORT ({len(discovered)} Found)</b>\n\n"
         buttons = []
         
@@ -802,7 +789,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                       f"• <b>Command:</b> <code>{html.escape(d['cmdline'][:100])}</code>\n" \
                       f"• <b>Active Port:</b> <code>{d['port'] or 'N/A'}</code>\n\n"
                       
-            # Add option to take control, register, or kill foreign process
             buttons.append([
                 InlineKeyboardButton(f"🚨 KILL PID {d['real_pid']}", callback_data=f"killproc_{d['real_pid']}"),
                 InlineKeyboardButton(f"📥 REGISTER", callback_data=f"regproc_{d['real_pid']}")
@@ -916,7 +902,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 await query.message.reply_text("📋 Logs database empty for this workspace.")
                 
         elif action == "p_build":
-            # Force dependencies rebuild and hot reload
             stop_process(p_id)
             with get_db_connection() as conn:
                 conn.execute("UPDATE projects SET deps_installed = 0 WHERE id = ?", (p_id,))
@@ -934,7 +919,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             p_path = project_folder(proj['user_id'], proj['project_name'])
             shutil.rmtree(p_path, ignore_errors=True)
             
-            # Remove custom logging footprints
             log_file = os.path.join(LOG_DIR, f"project_{p_id}.txt")
             if os.path.exists(log_file): os.remove(log_file)
             
@@ -981,7 +965,6 @@ async def self_management_panel(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     if not is_admin(user_id): return
     
-    # Render inline keyboard for hot pulling repository upgrades
     buttons = [
         [InlineKeyboardButton("🔄 Git Pull Core Engine", callback_data="self_git_pull")],
         [InlineKeyboardButton("📤 Upload Bot ZIP Update", callback_data="self_zip_update")],
@@ -1266,7 +1249,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         p_dir = project_folder(proj['user_id'], proj['project_name'])
         
-        # Merge current environment mappings
         env = os.environ.copy()
         try:
             user_env = json.loads(proj.get('env_vars', '{}'))
@@ -1371,7 +1353,7 @@ def auto_start_all_projects():
 async def global_exception_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Filters, suppresses, and logs temporary HTTPX read drops and socket timeouts gracefully"""
     error = context.error
-    if isinstance(error, NetworkError) or "httpx.ReadError" in str(error) or "ReadTimeout" in str(error):
+    if isinstance(error, NetworkError) or "httpx.ReadError" in str(error) or "ReadTimeout" in str(error) or "Event loop is closed" in str(error):
         logger.warning(f"⚠️ VPS Network Link Fluctuation (Telegram gateway dropped request - HTTPX will auto-retry): {error}")
         return
     logger.error("Exception while handling update cycle:", exc_info=error)
@@ -1385,18 +1367,26 @@ def main():
     # Run auto start sequence in thread
     threading.Thread(target=auto_start_all_projects, daemon=True).start()
     
-    # Configure custom HTTPX timeouts explicitly preventing premature read timeout terminations on slow interfaces
-    request_config = HTTPXRequest(
-        connection_pool_size=10, 
-        connect_timeout=25.0, 
-        read_timeout=25.0,
-        write_timeout=25.0
+    # Set up the base application with the custom HTTPX connection configurations
+    # We construct them via the builder directly so they lazy-initialize within the proper event loop.
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connection_pool_size(10)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
+        .build()
     )
     
-    app = Application.builder().token(BOT_TOKEN).request(request_config).build()
-    
-    # Auto provision essential system compilers and web engines
-    run_auto_provisioner(app.bot)
+    # 🌟 NATIVE POST_INIT HOOK REGISTRATION
+    # We register the async auto provisioner task as a post-init task. This executes it natively
+    # inside the main thread's asyncio event loop, safely sharing PTB's event loop structure.
+    async def post_init_setup(application: Application) -> None:
+        asyncio.create_task(run_auto_provisioner_async(application.bot))
+        
+    app.post_init = post_init_setup
     
     # Bind custom resiliency error callback to silence HTTPX ReadError drops
     app.add_error_handler(global_exception_handler)
