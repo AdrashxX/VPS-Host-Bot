@@ -28,7 +28,7 @@ except ImportError:
 
 # Internal imports from modular structures
 from config import (
-    BOT_TOKEN, OWNER_ID, OWNER_USERNAME, DEVELOPER_NAME, LOG_DIR, TEMP_DIR,
+    BOT_TOKEN, OWNER_ID, OWNER_USERNAME, LOG_DIR, TEMP_DIR,
     MAX_FILE_SIZE, MAX_FILE_SIZE_MB, NODEJS_AVAILABLE, 
     PYTHON_VERSIONS, check_single_instance, setup_advanced_logging, BASE_DIR
 )
@@ -49,7 +49,6 @@ logger = setup_advanced_logging()
 user_states = {}
 broadcast_states = {}
 
-# ===== STREAMING_CHUNK: Defining UI rendering functions... =====
 # ===== GENERAL HELPER UI FUNCTIONS =====
 def get_performance_color(percent):
     if percent < 50: return "🟢"
@@ -79,7 +78,6 @@ async def send_response(update: Update, text: str, reply_markup=None, parse_mode
         if "Message is not modified" not in str(e):
             raise e
 
-# ===== STREAMING_CHUNK: Coding core bot interaction commands... =====
 # ===== TELEGRAM COMMAND ROUTINES =====
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -126,7 +124,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Advanced Shell command processor interface\n" \
             f"• Secure live Git updating and Hot-Reboots\n\n" \
             f"🔒 <b>Whitelisted Admins & Approved Clients Only</b>\n" \
-            f"👤 <b>Developed by:</b> {DEVELOPER_NAME} ({OWNER_USERNAME})"
+            f"👤 <b>Developed by:</b> HmGamer (@EliteHM)"
             
     await update.message.reply_text(promo, parse_mode=ParseMode.HTML)
     
@@ -145,7 +143,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
               
     await update.message.reply_text(welcome, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-# ===== STREAMING_CHUNK: Coding bot deploy interfaces... =====
 async def bot_host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not has_access(user_id):
@@ -179,7 +176,6 @@ async def bot_host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML
     )
 
-# ===== STREAMING_CHUNK: Structuring paginated deployment indexes... =====
 async def list_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
     user_id = update.effective_user.id
     if not has_access(user_id):
@@ -250,7 +246,6 @@ async def list_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     
     await send_response(update, text, reply_markup=InlineKeyboardMarkup(buttons))
 
-# ===== STREAMING_CHUNK: Coding the background worker threads... =====
 # ===== EXECUTOR LAUNCH PIPELINE =====
 def start_project_worker(project_id, project, chat_id, loop, bot):
     """Execution pipeline handling builds and launching sandboxed process workers"""
@@ -328,7 +323,6 @@ def start_project_worker(project_id, project, chat_id, loop, bot):
         logger.error(f"Thread deployment execution breakdown: {e}")
         push_msg(f"❌ Process launch breakdown for project ID {project_id}: {e}")
 
-# ===== STREAMING_CHUNK: Coding package upload validation... =====
 # ===== DYNAMIC DEPLOYMENT HANDLER =====
 async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -441,7 +435,6 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     finally:
         user_states.pop(user_id, None)
 
-# ===== STREAMING_CHUNK: Setting up interactive inline keys callback handlers... =====
 # ===== BUTTON ACTIONS CALLBACKS =====
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -515,7 +508,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     except Exception:
         pass
 
-# ===== STREAMING_CHUNK: Implementing system control terminals... =====
 # ===== VPS CONTROLS & MANAGEMENT INTERFACES =====
 async def systemd_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -581,7 +573,94 @@ async def self_cb_management(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.message.reply_text("🔌 Executing safe hot-restart of VPS orchestrator process space...")
         hot_reboot_bot()
 
-# ===== STREAMING_CHUNK: Coding admin promotion, routing, and refresh procedures... =====
+# ===== CORE PLATFORM COMMAND IMPLEMENTATIONS =====
+async def bot_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Core function returning rolling platform engine logs"""
+    user_id = update.effective_user.id
+    if not is_admin(user_id): return
+    
+    log_path = os.path.join(LOG_DIR, "hosting_bot.log")
+    if not os.path.exists(log_path):
+        await update.message.reply_text("📋 Logs are currently empty.")
+        return
+        
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            log_data = f.read()[-3000:]
+        await update.message.reply_text(
+            f"📋 <b>Bot Core Host Logs:</b>\n\n<pre>{html.escape(log_data)}</pre>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error reading bot logs: {e}")
+
+async def system_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Retrieves VPS system metric performance diagnostics"""
+    user_id = update.effective_user.id
+    if not is_admin(user_id): return
+    
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    
+    with get_db_connection() as conn:
+        total_users = conn.execute("SELECT COUNT(*) as count FROM users").fetchone()['count']
+        total_projects = conn.execute("SELECT COUNT(*) as count FROM projects").fetchone()['count']
+        running_projects = conn.execute("SELECT COUNT(*) as count FROM projects WHERE status = 'running'").fetchone()['count']
+        
+    py_versions = "".join([f"• {k}: {v}\n" for k, v in PYTHON_VERSIONS.items()])
+    node_status = "✅ Active" if NODEJS_AVAILABLE else "❌ Missing dependency"
+    
+    status_text = (
+        f"🖥️ <b>VPS CORE SYSTEM STATUS</b>\n\n"
+        f"📈 <b>Hardware Allocation:</b>\n"
+        f"• {get_performance_color(cpu_percent)} CPU Usage: <code>{cpu_percent}%</code>\n"
+        f"• {get_performance_color(memory.percent)} Memory Usage: <code>{memory.percent}%</code> (Free: {memory.available // (1024*1024)}MB)\n"
+        f"• {get_performance_color(disk.percent)} Storage Usage: <code>{disk.percent}%</code> (Free: {disk.free // (1024*1024*1024)}GB)\n\n"
+        f"📊 <b>Platform Databases:</b>\n"
+        f"• Registered Users: <code>{total_users}</code>\n"
+        f"• Deployed Services: <code>{total_projects}</code>\n"
+        f"• Online Workers: <code>{running_projects}</code>\n\n"
+        f"⚙️ <b>Server Environments:</b>\n"
+        f"{py_versions}"
+        f"• Node.js Engine: {node_status}"
+    )
+    await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
+
+async def user_management_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Renders user metrics and quick whitelisting settings"""
+    user_id = update.effective_user.id
+    if not is_admin(user_id): return
+    
+    with get_db_connection() as conn:
+        users = conn.execute("SELECT * FROM users ORDER BY last_active DESC LIMIT 30").fetchall()
+        
+    text = "👥 <b>PLATFORM CLIENT MANAGEMENT</b>\n\n"
+    for u in users:
+        limit_lbl = "Unlimited" if u['file_limit'] == -1 else str(u['file_limit'])
+        text += f"• <code>{u['user_id']}</code> | @{u['username'] or 'Unknown'} | Limit: {limit_lbl}\n"
+        
+    text += f"\n👉 Admin Command: <code>/limit [USERID] [LIMIT]</code>"
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def clear_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Truncates VPS logs cleanly"""
+    user_id = update.effective_user.id
+    if not is_admin(user_id): return
+    
+    try:
+        cleared_files = 0
+        for filename in os.listdir(LOG_DIR):
+            file_path = os.path.join(LOG_DIR, filename)
+            if os.path.isfile(file_path):
+                with open(file_path, 'w') as f:
+                    f.write(f"=== Log Session Cleared at {datetime.now()} ===\n")
+                cleared_files += 1
+        
+        await update.message.reply_text(f"🧹 <b>Logs Cleared successfully!</b>\nCleaned {cleared_files} records securely.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to truncate log directory: {e}")
+
 # ===== ADMIN EXCLUSIVE SYSTEM ROUTINES =====
 async def promo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -624,7 +703,6 @@ async def install_deps_command(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         await p_msg.edit_text(f"❌ Package pipeline exception crash: {e}")
 
-# ===== STREAMING_CHUNK: Coding textual shell interpreters and routers... =====
 # ===== BROADCAST & TEXT INPUT ROUTINES =====
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -635,6 +713,29 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
+    
+    # 🌟 CRITICAL FIX: Intercept keyboard menu inputs first, popping awaiting_shell_cmd state.
+    menu_buttons = [
+        "🚀 HOST BOT", "📊 MY PROJECTS", "🖥️ VPS CONTROLS", 
+        "⚙️ BOT SELF-MANAGEMENT", "📢 BROADCAST", "📋 BOT LOGS", 
+        "🖥️ SYSTEM STATUS", "👥 USER MANAGEMENT", "🧹 CLEAR LOGS"
+    ]
+    
+    if text in menu_buttons:
+        # Instantly close any awaiting shell, update, or broadcast states
+        user_states.pop(user_id, None)
+        broadcast_states.pop(user_id, None)
+        
+        if text == "🚀 HOST BOT": await bot_host_command(update, context)
+        elif text == "📊 MY PROJECTS": await list_bots_command(update, context)
+        elif text == "🖥️ VPS CONTROLS": await exec_shell_panel(update, context)
+        elif text == "⚙️ BOT SELF-MANAGEMENT": await self_management_panel(update, context)
+        elif text == "📢 BROADCAST": await broadcast_command(update, context)
+        elif text == "📋 BOT LOGS": await bot_logs_command(update, context)
+        elif text == "🖥️ SYSTEM STATUS": await system_status_command(update, context)
+        elif text == "👥 USER MANAGEMENT": await user_management_command(update, context)
+        elif text == "🧹 CLEAR LOGS": await clear_logs_command(update, context)
+        return
     
     # Process secure terminal input
     if user_id in user_states and user_states[user_id].get("awaiting_shell_cmd"):
@@ -687,13 +788,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Core broadcast package fully pushed.")
         return
         
-    # Standard UI Navigation Bindings mapping menus
-    if text == "🚀 HOST BOT": await bot_host_command(update, context)
-    elif text == "📊 MY PROJECTS": await list_bots_command(update, context)
-    elif text == "🖥️ VPS CONTROLS": await exec_shell_panel(update, context)
-    elif text == "⚙️ BOT SELF-MANAGEMENT": await self_management_panel(update, context)
+    # Default fallback
+    await update.message.reply_text("🤖 Use platform menu or /start for assistance.", parse_mode=ParseMode.HTML)
 
-# ===== STREAMING_CHUNK: Coding back-end automated server restart triggers... =====
 # ===== BACKGROUND SERVICE LOOPS =====
 def auto_start_all_projects():
     try:
@@ -705,7 +802,6 @@ def auto_start_all_projects():
     except Exception as e:
         logger.error(f"Auto-restart routine issue: {e}")
 
-# ===== STREAMING_CHUNK: Building final application loops... =====
 # ===== SYSTEM APPLICATION INCEPTION =====
 def main():
     check_single_instance()
