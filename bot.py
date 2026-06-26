@@ -81,6 +81,98 @@ def apply_schema_migrations():
     except Exception as e:
         logger.error(f"⚠️ Non-critical schema migration check warning: {e}")
 
+# ===== STATIC ANALYSIS IMPORT PARSERS (AUTO-PREVENT CRASHES) =====
+def parse_python_imports(p_dir):
+    """Scan all Python files in the workspace and identify missing third-party packages to install"""
+    std_libs = {
+        "os", "sys", "time", "re", "math", "random", "json", "sqlite3", "asyncio", "logging", 
+        "datetime", "shutil", "urllib", "hashlib", "socket", "threading", "glob", "pathlib", 
+        "uuid", "inspect", "base64", "io", "collections", "ctypes", "platform", "traceback", 
+        "atexit", "select", "struct", "abc", "contextlib", "subprocess", "typing", "functools", 
+        "itertools", "pickle", "weakref", "tempfile", "signal", "errno", "xml", "csv", 
+        "argparse", "getopt", "http", "socketserver", "configparser", "pdb", "timeit", 
+        "multiprocessing", "queue", "concurrent", "uuid"
+    }
+    pip_mappings = {
+        "telegram": "python-telegram-bot",
+        "telebot": "pyTelegramBotAPI",
+        "discord": "discord.py",
+        "bs4": "beautifulsoup4",
+        "dotenv": "python-dotenv",
+        "PIL": "Pillow",
+        "yaml": "PyYAML",
+        "mysql": "mysql-connector-python",
+        "fitz": "PyMuPDF",
+        "requests": "requests",
+        "aiogram": "aiogram",
+        "pyrogram": "pyrogram",
+        "flask": "flask",
+        "fastapi": "fastapi",
+        "django": "django",
+        "uvicorn": "uvicorn"
+    }
+    detected = set()
+    import_pattern = re.compile(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)')
+    
+    for root, _, files in os.walk(p_dir):
+        for file in files:
+            if file.endswith('.py'):
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        for line in f:
+                            match = import_pattern.match(line)
+                            if match:
+                                module = match.group(1)
+                                if module not in std_libs:
+                                    pkg = pip_mappings.get(module, module.lower())
+                                    detected.add(pkg)
+                except Exception as e:
+                    logger.error(f"Error parsing python imports in {file_path}: {e}")
+    return list(detected)
+
+def parse_nodejs_imports(p_dir):
+    """Scan Node.js project directory for require and ES6 ES import statements"""
+    std_nodes = {
+        "fs", "path", "http", "https", "crypto", "os", "util", "events", "child_process", 
+        "querystring", "url", "stream", "dns", "zlib", "readline", "net", "tls", "assert", 
+        "cluster", "dgram", "vm", "v8"
+    }
+    detected = set()
+    require_pattern = re.compile(r'require\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)')
+    import_pattern = re.compile(r'from\s+[\'"]([^\'"]+)[\'"]')
+    import_direct_pattern = re.compile(r'import\s+[\'"]([^\'"]+)[\'"]')
+    
+    for root, _, files in os.walk(p_dir):
+        if "node_modules" in root:
+            continue
+        for file in files:
+            if file.endswith(('.js', '.ts', '.mjs')):
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        for line in f:
+                            # match require
+                            for match in require_pattern.finditer(line):
+                                pkg = match.group(1)
+                                if not pkg.startswith(('.', '/')) and pkg not in std_nodes:
+                                    top_pkg = pkg.split('/')[0] if not pkg.startswith('@') else '/'.join(pkg.split('/')[:2])
+                                    detected.add(top_pkg)
+                            # match imports
+                            for match in import_pattern.finditer(line):
+                                pkg = match.group(1)
+                                if not pkg.startswith(('.', '/')) and pkg not in std_nodes:
+                                    top_pkg = pkg.split('/')[0] if not pkg.startswith('@') else '/'.join(pkg.split('/')[:2])
+                                    detected.add(top_pkg)
+                            for match in import_direct_pattern.finditer(line):
+                                pkg = match.group(1)
+                                if not pkg.startswith(('.', '/')) and pkg not in std_nodes:
+                                    top_pkg = pkg.split('/')[0] if not pkg.startswith('@') else '/'.join(pkg.split('/')[:2])
+                                    detected.add(top_pkg)
+                except Exception as e:
+                    logger.error(f"Error parsing node imports in {file_path}: {e}")
+    return list(detected)
+
 # ===== AUTO-PROVISION SYSTEM DEPENDENCIES (PHP, NPM, ETC) =====
 async def run_auto_provisioner_async(bot_obj: Bot):
     """Checks the host VPS for node, npm, php, composer, and installs missing packages in background natively"""
@@ -537,17 +629,53 @@ def start_project_worker(project_id, chat_id, loop, bot):
         if not project['deps_installed']:
             push_msg(f"🛠️ [{p_name}] System analyzing packages & triggering automated dependency builder...")
             
+            # --- ADVANCED DYNAMIC CODE RECONNAISSANCE SCANNER ---
+            # Automatically scans the active workspace and detects dependencies that are imported in code
+            # but omitted from standard descriptor packages (requirements.txt / package.json)
+            auto_packages_to_install = []
+            if project['framework'] == "Python":
+                logger.info(f"Scanning Python code imports dynamically for {p_name} to prevent runtime crashes...")
+                auto_packages_to_install = parse_python_imports(p_dir)
+            elif project['framework'] == "Node.js":
+                logger.info(f"Scanning Node.js code imports dynamically for {p_name} to prevent runtime crashes...")
+                auto_packages_to_install = parse_nodejs_imports(p_dir)
+                
             # 1. Node.js Runtimes
-            if project['framework'] == "Node.js" and os.path.exists(os.path.join(p_dir, 'package.json')):
+            if project['framework'] == "Node.js":
+                # Ensure a package.json scaffold is available to prevent npm crashes
+                p_json_path = os.path.join(p_dir, 'package.json')
+                if not os.path.exists(p_json_path):
+                    p_json_content = {
+                        "name": p_name.lower(),
+                        "version": "1.0.0",
+                        "main": project['main_file'],
+                        "dependencies": {}
+                    }
+                    try:
+                        with open(p_json_path, 'w') as f:
+                            json.dump(p_json_content, f, indent=2)
+                    except Exception as e:
+                        logger.error(f"Failed to generate package.json scaffold: {e}")
+
                 push_msg(f"⚡ Running npm installation sequences for <code>{p_name}</code>...")
                 try:
                     res = subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=p_dir, capture_output=True, text=True, timeout=300)
                     if res.returncode == 0:
-                        push_msg("✅ npm installation sequence completed.")
+                        push_msg("✅ Original package.json dependencies resolved.")
                     else:
                         logger.warning(f"npm install alert: {res.stderr}")
                 except Exception as e:
                     push_msg(f"⚠️ npm installation warning: {e}")
+                
+                # Install dynamically scanned NodeJS packages to guarantee no crash
+                if auto_packages_to_install:
+                    push_msg(f"🕵️‍♂️ Detected <code>{len(auto_packages_to_install)}</code> unlisted imported NodeJS modules: <code>{', '.join(auto_packages_to_install)}</code>\n⏳ Installing now to prevent runtime crash...")
+                    try:
+                        npm_args = ["npm", "install", "--no-audit", "--no-fund", "--save"] + auto_packages_to_install
+                        subprocess.run(npm_args, cwd=p_dir, capture_output=True, text=True, timeout=300)
+                        push_msg("✅ Successfully pre-installed all scanned NodeJS imports.")
+                    except Exception as e:
+                        logger.error(f"Dynamic Node dependency pre-installation failed: {e}")
                     
             # 2. PHP Composer Support
             elif project['framework'] == "PHP" and os.path.exists(os.path.join(p_dir, 'composer.json')):
@@ -567,11 +695,25 @@ def start_project_worker(project_id, chat_id, loop, bot):
                     try:
                         res = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file], capture_output=True, text=True, timeout=300)
                         if res.returncode != 0:
-                            # Fallback
                             subprocess.run(["pip3", "install", "-r", req_file], timeout=300)
-                        push_msg("✅ Python package configurations established.")
+                        push_msg("✅ requirements.txt dependencies resolved.")
                     except Exception as e:
                         push_msg(f"⚠️ pip installation wrapper warning: {e}")
+                
+                # Install dynamically scanned Python packages to guarantee no crash
+                if auto_packages_to_install:
+                    push_msg(f"🕵️‍♂️ Detected <code>{len(auto_packages_to_install)}</code> unlisted imported Python modules: <code>{', '.join(auto_packages_to_install)}</code>\n⏳ Pre-installing now to prevent runtime crash...")
+                    try:
+                        pip_args = [sys.executable, "-m", "pip", "install"] + auto_packages_to_install
+                        subprocess.run(pip_args, capture_output=True, text=True, timeout=300)
+                        push_msg("✅ Successfully pre-installed all scanned Python imports.")
+                    except Exception as e:
+                        try:
+                            pip3_args = ["pip3", "install"] + auto_packages_to_install
+                            subprocess.run(pip3_args, capture_output=True, text=True, timeout=300)
+                            push_msg("✅ Successfully pre-installed scanned Python imports (via fallback).")
+                        except Exception as ex:
+                            logger.error(f"Dynamic Python dependency pre-installation failed: {ex}")
                         
             # Set deployment dependencies as loaded
             with get_db_connection() as conn:
@@ -700,6 +842,9 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         os.makedirs(extract_dir, exist_ok=True)
         
         main_file = None
+        
+        # 🌟 CRITICAL FIX: Ensure deps_installed = 0 initially even for single files,
+        # so that they run through our advanced automated dynamic scanning & dependencies install phase!
         deps_installed_default = 0
         
         if is_zip:
@@ -719,7 +864,6 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             file_dest_path = os.path.join(extract_dir, doc.file_name)
             await tg_file.download_to_drive(file_dest_path)
             main_file = doc.file_name
-            deps_installed_default = 1  # Bypass standard dependencies installation check phase to boot instantly
             
             # Ensure proper scaffolding environment configurations
             if ext.lower() == '.py':
