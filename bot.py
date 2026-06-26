@@ -16,14 +16,16 @@ try:
     from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, Bot
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
     from telegram.constants import ParseMode
-    from telegram.error import BadRequest, Conflict, InvalidToken
+    from telegram.error import BadRequest, Conflict, InvalidToken, NetworkError
+    from telegram.request import HTTPXRequest
 except ImportError:
     import subprocess
     subprocess.run([sys.executable, "-m", "pip", "install", "python-telegram-bot==20.7"], check=True)
     from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, Bot
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
     from telegram.constants import ParseMode
-    from telegram.error import BadRequest, Conflict, InvalidToken
+    from telegram.error import BadRequest, Conflict, InvalidToken, NetworkError
+    from telegram.request import HTTPXRequest
 
 # Internal imports from modular structures
 from config import (
@@ -869,6 +871,19 @@ def auto_start_all_projects():
     except Exception as e:
         logger.error(f"Auto-restart routine issue: {e}")
 
+# ===== GLOBAL ERROR EXCEPTION DISPATCHER =====
+async def global_exception_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Filters, suppresses, and logs temporary HTTPX read drops and socket timeouts gracefully"""
+    error = context.error
+    
+    # Check for temporary client read drop errors
+    if isinstance(error, NetworkError) or "httpx.ReadError" in str(error) or "ReadTimeout" in str(error):
+        logger.warning(f"⚠️ VPS Network Link Fluctuation (Telegram gateway dropped request - HTTPX will auto-retry): {error}")
+        return
+        
+    # Standard log trace writeout for non-connection logic errors
+    logger.error("Exception while handling update cycle:", exc_info=error)
+
 # ===== SYSTEM APPLICATION INCEPTION =====
 def main():
     check_single_instance()
@@ -877,7 +892,20 @@ def main():
     # Run auto start sequence in thread
     threading.Thread(target=auto_start_all_projects, daemon=True).start()
     
-    app = Application.builder().token(BOT_TOKEN).build()
+    # ⚙️ VPS Network Link Resiliency Configuration Block
+    # Configure custom HTTPX timeouts explicitly preventing premature read timeout terminations on slow interfaces
+    request_config = HTTPXRequest(
+        connection_pool_size=10, 
+        connect_timeout=20.0, 
+        read_timeout=20.0,
+        write_timeout=20.0
+    )
+    
+    # Build Telegram polling system utilizing optimized network profiles
+    app = Application.builder().token(BOT_TOKEN).request(request_config).build()
+    
+    # Bind custom resiliency error callback to silence HTTPX ReadError drops
+    app.add_error_handler(global_exception_handler)
     
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("promo", promo_command))
