@@ -1926,6 +1926,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
             
         try:
+            import subprocess
             res = subprocess.run(
                 text,
                 shell=True,
