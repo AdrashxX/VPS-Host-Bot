@@ -20,6 +20,7 @@ try:
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
     from telegram.constants import ParseMode
     from telegram.error import BadRequest, Conflict, InvalidToken, NetworkError
+    from telegram.request import HTTPXRequest
 except ImportError:
     import subprocess
     subprocess.run([sys.executable, "-m", "pip", "install", "python-telegram-bot==20.7"], check=True)
@@ -27,6 +28,7 @@ except ImportError:
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
     from telegram.constants import ParseMode
     from telegram.error import BadRequest, Conflict, InvalidToken, NetworkError
+    from telegram.request import HTTPXRequest
 
 # Internal imports from modular structures
 from config import (
@@ -796,7 +798,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("❌ System access expired or deactivated.")
         return
         
-    if data.startswith("projects_page_"):
+    if data.startswith("portfolio_page_"):
         await list_bots_command(update, context, int(data.split("_")[2]))
         return
     elif data == "refresh_projects":
