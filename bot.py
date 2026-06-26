@@ -11,11 +11,7 @@ import re
 import json
 import sqlite3
 import urllib.request
-import urllib.parse
 import http.client
-import http.server
-import socketserver
-import base64
 from datetime import datetime, timedelta
 import psutil
 import subprocess
@@ -62,11 +58,6 @@ broadcast_states = {}
 # Cached Public IP Address of VPS
 VPS_PUBLIC_IP = "YOUR_VPS_IP"
 
-# Web Dashboard Session Tokens Storage
-# Schema: { token: { "user_id": int, "expires": datetime, "username": str } }
-dashboard_tokens = {}
-WEB_DASHBOARD_PORT = 9999
-
 def resolve_vps_public_ip():
     """Detect and cache the public IP address of the VPS for building API endpoints"""
     global VPS_PUBLIC_IP
@@ -87,22 +78,6 @@ def resolve_vps_public_ip():
             logger.info(f"🌍 Fallback Local IP interface detected: {VPS_PUBLIC_IP}")
         except Exception:
             VPS_PUBLIC_IP = "127.0.0.1"
-
-def generate_dashboard_token(user_id, username):
-    """Generate a high-entropy short-lived authentication token for web console access"""
-    import secrets
-    token = secrets.token_hex(24)
-    expiry = datetime.now() + timedelta(minutes=30)
-    dashboard_tokens[token] = {
-        "user_id": user_id,
-        "username": username or f"Client_{user_id}",
-        "expires": expiry
-    }
-    # Periodically clean up expired tokens to save memory
-    expired = [t for t, d in dashboard_tokens.items() if d["expires"] < datetime.now()]
-    for t in expired:
-        dashboard_tokens.pop(t, None)
-    return token
 
 # ===== DATABASE STRUCTURAL MIGRATION SAFEGUARDS =====
 def apply_schema_migrations():
@@ -488,10 +463,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ["🖥️ VPS CONTROLS", "⚙️ SELF-MGMT"],
         ["📢 BROADCAST", "📋 BOT LOGS"],
         ["🖥️ SYSTEM STATUS", "👥 USER MANAGEMENT"],
-        ["🖥️ WEB DASHBOARD", "🧹 CLEAR LOGS"]
+        ["🧹 CLEAR LOGS"]
     ] if is_admin(user_id) else [
-        ["🚀 HOST BOT", "📊 MY PROJECTS"],
-        ["🖥️ WEB DASHBOARD"]
+        ["🚀 HOST BOT", "📊 MY PROJECTS"]
     ]
     
     kb = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
@@ -503,8 +477,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Live process supervisors & API binding\n"
         f"• Dynamic terminal command ports\n"
         f"• Support: Python, Node.js, PHP, HTML\n"
-        f"• Automated cluster state recovery\n"
-        f"• 🖥️ Premium Web Controller Panel Included\n\n"
+        f"• Automated cluster state recovery\n\n"
         f"🔒 Whitelisted Administrators Only\n"
         f"👤 Developer: HmGamer (@EliteHM)"
     )
@@ -526,8 +499,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Welcome back, <b>{username_display}</b>!\n\n"
         f"📈 <b>Class Allocation Parameters:</b>\n"
         f"• Account Limit: <code>{get_user_limit(user_id)}</code>\n"
-        f"• Authorization Level: <code>{'👑 Owner' if user_id == OWNER_ID else '🔧 Admin' if is_admin(user_id) else '✅ Premium Client'}</code>\n"
-        f"• Web Dashboard Port: <code>{WEB_DASHBOARD_PORT}</code>"
+        f"• Authorization Level: <code>{'👑 Owner' if user_id == OWNER_ID else '🔧 Admin' if is_admin(user_id) else '✅ Premium Client'}</code>"
     )
               
     await update.message.reply_text(welcome, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -710,6 +682,7 @@ async def run_internal_api_ping(port):
     """Diagnose HTTP endpoint bind internally using python standard libraries"""
     start_time = time.time()
     try:
+        # Resolve request pathways natively using python's built-in http.client 
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
         conn.request("GET", "/")
         resp = conn.getresponse()
@@ -740,7 +713,7 @@ async def render_api_bind_panel(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id if update.effective_user else update.callback_query.from_user.id
     
     with get_db_connection() as conn:
-        proj_row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        proj_row = conn.execute("SELECT * VALUES FROM projects WHERE id = ?", (project_id,)).fetchone()
         
     if not proj_row:
         await send_response(update, "❌ Project details unavailable.")
@@ -761,6 +734,7 @@ async def render_api_bind_panel(update: Update, context: ContextTypes.DEFAULT_TY
     )
     
     buttons = []
+    # If a port is bound, provide direct connection test options
     if proj['port']:
         buttons.append([InlineKeyboardButton("⚡ TEST ACTIVE ENDPOINT", callback_data=f"api_test_{project_id}")])
         
@@ -775,36 +749,6 @@ async def render_api_bind_panel(update: Update, context: ContextTypes.DEFAULT_TY
     buttons.append([InlineKeyboardButton("🔙 BACK TO CONSOLE", callback_data=f"viewproj_{project_id}")])
     
     await send_response(update, panel_view, reply_markup=InlineKeyboardMarkup(buttons))
-
-# ===== WEB PANEL COMMANDS =====
-async def web_dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate secure login token and return the VPS Admin Dashboard URL"""
-    user_id = update.effective_user.id
-    if not has_access(user_id):
-        await update.message.reply_text("❌ Whitelisting required to view system status.")
-        return
-        
-    username = update.effective_user.username or update.effective_user.first_name
-    token = generate_dashboard_token(user_id, username)
-    
-    # Generate direct direct routing URL linking securely using token auth parameters
-    dashboard_url = f"http://{VPS_PUBLIC_IP}:{WEB_DASHBOARD_PORT}/?token={token}"
-    
-    view_text = (
-        f"🖥️ <b>VPS WEB PANEL PORTAL</b>\n"
-        f"─────────────────────────────\n"
-        f"To access your high-performance Web Control Dashboard, tap the secure direct portal link below.\n\n"
-        f"🔑 <b>Security Token Session:</b>\n"
-        f"• Access Duration: <code>30 Minutes</code>\n"
-        f"• Authorization Level: <code>{'Admin' if is_admin(user_id) else 'Client'}</code>\n\n"
-        f"💡 <i>You can fully host, deploy, edit packages, execute CLI terminals, and inspect resource logs directly inside your web browser.</i>"
-    )
-    
-    buttons = [
-        [InlineKeyboardButton("🔗 OPEN WEB DASHBOARD", url=dashboard_url)],
-        [InlineKeyboardButton("🔄 GENERATE NEW SESSION", callback_data="web_dash_regen")]
-    ]
-    await update.message.reply_text(view_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.HTML)
 
 # ===== EXECUTOR LAUNCH PIPELINE WITH MULTI-LANGUAGE DEPS =====
 def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
@@ -851,6 +795,7 @@ def start_project_worker(project_id, chat_id, status_msg_id, loop, bot):
         env = os.environ.copy()
         env['BOT_HOSTING_PLATFORM'] = 'True'
         if 'BOT_TOKEN' in env: env.pop('BOT_TOKEN')
+        # Map port binding to system-level port variables
         if project['port']: 
             env['PORT'] = str(project['port'])
             env['HOST'] = '0.0.0.0'
@@ -1104,6 +1049,7 @@ async def file_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         framework = "Unknown"
         port = None
         
+        # Determine frameworks and auto-allocate API ports if web scripts detected
         if main_file.endswith('.py'):
             framework = "Python"
             if any(x in types for x in ["flask", "fastapi", "django"]):
@@ -1187,9 +1133,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     elif data.startswith("viewproj_"):
         p_id = int(data.split("_")[1])
         await show_project_console(update, context, p_id)
-        return
-    elif data == "web_dash_regen":
-        await web_dashboard_command(update, context)
         return
         
     # PROCESS SECURITY ACTION CALLBACKS
@@ -1793,8 +1736,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu_buttons = [
         "🚀 HOST BOT", "📊 MY PROJECTS", "🖥️ VPS CONTROLS", 
         "⚙️ SELF-MGMT", "📢 BROADCAST", "📋 BOT LOGS", 
-        "🖥️ SYSTEM STATUS", "👥 USER MANAGEMENT", "🧹 CLEAR LOGS",
-        "🖥️ WEB DASHBOARD"
+        "🖥️ SYSTEM STATUS", "👥 USER MANAGEMENT", "🧹 CLEAR LOGS"
     ]
     
     if text in menu_buttons:
@@ -1810,7 +1752,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == "🖥️ SYSTEM STATUS": await system_status_command(update, context)
         elif text == "👥 USER MANAGEMENT": await user_management_command(update, context)
         elif text == "🧹 CLEAR LOGS": await clear_logs_command(update, context)
-        elif text == "🖥️ WEB DASHBOARD": await web_dashboard_command(update, context)
         return
     
     # INTERACTIVE REQUIREMENT & VERSION INSTALLATION STATE PROCESSORS
@@ -2094,1019 +2035,51 @@ async def global_exception_handler(update: object, context: ContextTypes.DEFAULT
         return
     logger.error("Exception while handling update cycle:", exc_info=error)
 
-# ===== WEB PORTAL CONTROLLER PAGE SERVING (ZERO DEPENDENCY PURE HTML WEB HOST) =====
-class DashboardHTTPHandler(http.server.BaseHTTPRequestHandler):
-    """Dynamic, secure high-fidelity web gateway panel serving process utilities directly from RAM"""
+# ===== SYSTEM APPLICATION INCEPTION =====
+def main():
+    check_single_instance()
+    apply_schema_migrations()
+    init_advanced_database()
     
-    # Silence default requests output in standard console stdout
-    def log_message(self, format, *args):
-        pass
-
-    def check_auth(self):
-        """Extract and validate secure cookie sessions or secure query token authentications"""
-        # 1. Inspect secure token query parameters first
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-        token = params.get('token', [None])[0]
+    # Resolve and cache VPS Public IP for accurate API endpoints
+    resolve_vps_public_ip()
+    
+    # Run state recovery sequence inside background threads
+    threading.Thread(target=auto_start_all_projects, daemon=True).start()
+    
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connection_pool_size(12)
+        .connect_timeout(35.0)
+        .read_timeout(35.0)
+        .write_timeout(35.0)
+        .pool_timeout(35.0)
+        .build()
+    )
+    
+    async def post_init_setup(application: Application) -> None:
+        asyncio.create_task(run_auto_provisioner_async(application.bot))
         
-        if token and token in dashboard_tokens:
-            session_data = dashboard_tokens[token]
-            if session_data["expires"] > datetime.now():
-                return session_data
-                
-        # 2. Inspect session cookies fallback
-        cookies_header = self.headers.get('Cookie', '')
-        cookies = {}
-        for c in cookies_header.split(';'):
-            if '=' in c:
-                k, v = c.strip().split('=', 1)
-                cookies[k] = v
-                
-        session_token = cookies.get('session_token')
-        if session_token and session_token in dashboard_tokens:
-            session_data = dashboard_tokens[session_token]
-            if session_data["expires"] > datetime.now():
-                return session_data
-        return None
+    app.post_init = post_init_setup
+    app.add_error_handler(global_exception_handler)
+    
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("promo", promo_command))
+    app.add_handler(CommandHandler("limit", limit_command))
+    app.add_handler(CommandHandler("addadmin", add_admin_command))
+    app.add_handler(CommandHandler("refresh", refresh_command))
+    app.add_handler(CommandHandler("install_deps", install_deps_command))
+    app.add_handler(CommandHandler("systemd", systemd_action_handler))
+    
+    app.add_handler(MessageHandler(filters.Document.ALL, file_upload_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    
+    app.add_handler(CallbackQueryHandler(self_cb_management, pattern="^self_"))
+    app.add_handler(CallbackQueryHandler(button_callback_handler))
+    
+    logger.info("⚡ System Operational core up and serving updates...")
+    app.run_polling(drop_pending_updates=True)
 
-    def send_json(self, data, status=200):
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Cookie")
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode('utf-8'))
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Cookie")
-        self.end_headers()
-
-    def do_GET(self):
-        parsed_url = urllib.parse.urlparse(self.path)
-        path = parsed_url.path
-        
-        # Session authentication interceptor
-        session = self.check_auth()
-        
-        # Token Login Gateway redirection pattern
-        params = urllib.parse.parse_qs(parsed_url.query)
-        url_token = params.get('token', [None])[0]
-        if url_token and url_token in dashboard_tokens:
-            self.send_response(302)
-            # Bind session cookie securely
-            self.send_header("Set-Cookie", f"session_token={url_token}; Path=/; HttpOnly; Max-Age=1800; SameSite=Lax")
-            self.send_header("Location", "/")
-            self.end_headers()
-            return
-
-        if not session:
-            # Server clean professional Unauthorized Login screen
-            self.send_response(401)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            unauthorized_html = """
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Access Denied - VPS Orchestrator</title>
-                <script src="https://cdn.tailwindcss.com"></script>
-                <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-                <style>body { font-family: 'Inter', sans-serif; }</style>
-            </head>
-            <body class="bg-[#0b0f19] text-[#f3f4f6] flex items-center justify-center min-h-screen">
-                <div class="max-w-md w-full mx-4 p-8 bg-[#161c2a] rounded-2xl border border-red-500/20 text-center shadow-2xl shadow-red-500/5">
-                    <div class="text-6xl mb-4">🔒</div>
-                    <h1 class="text-2xl font-bold text-red-500 mb-2">Unauthorized Session</h1>
-                    <p class="text-[#9ca3af] mb-6">Web Dashboard access is strictly protected. Please request a secure authentication link using the Telegram bot.</p>
-                    <div class="bg-[#1f293d] p-4 rounded-xl text-left border border-[#2d3748]">
-                        <p class="text-xs text-[#38bdf8] font-bold mb-1">STEPS TO ACCESS:</p>
-                        <ol class="list-decimal list-inside text-xs text-[#9ca3af] space-y-1">
-                            <li>Open your Telegram bot workspace</li>
-                            <li>Send or tap command <code class="text-yellow-400 bg-black/30 px-1 py-0.5 rounded">/dashboard</code></li>
-                            <li>Click the secure <b>Open Dashboard</b> dynamic token portal</li>
-                        </ol>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
-            self.wfile.write(unauthorized_html.encode('utf-8'))
-            return
-
-        # Serve Dashboard Single-Page Application (SPA) Client
-        if path == "/":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(self.get_spa_html(session).encode('utf-8'))
-            return
-
-        # Fetch system hardware metrics in-RAM
-        if path == "/api/stats":
-            cpu = psutil.cpu_percent()
-            mem = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
-            
-            with get_db_connection() as conn:
-                total_projects = conn.execute("SELECT COUNT(*) as count FROM projects").fetchone()['count']
-                running_projects = conn.execute("SELECT COUNT(*) as count FROM projects WHERE status = 'running'").fetchone()['count']
-                
-            stats = {
-                "cpu": cpu,
-                "memory": mem.percent,
-                "memory_mb_used": (mem.total - mem.available) // (1024*1024),
-                "memory_mb_total": mem.total // (1024*1024),
-                "disk": disk.percent,
-                "disk_gb_free": disk.free // (1024*1024*1024),
-                "total_projects": total_projects,
-                "running_projects": running_projects,
-                "uptime_hours": int(time.time() - psutil.boot_time()) // 3600,
-                "vps_ip": VPS_PUBLIC_IP
-            }
-            self.send_json(stats)
-            return
-
-        # Retrieve managed code workspaces list
-        if path == "/api/projects":
-            with get_db_connection() as conn:
-                rows = conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
-            projects_list = []
-            for r in rows:
-                p_dict = dict(r)
-                p_dict["running"] = is_running(p_dict["id"])
-                
-                # Fetch runtime logs if process is operational
-                p_dict["ram_usage"] = 0
-                p_dict["cpu_usage"] = 0
-                if p_dict["running"]:
-                    info = get_process_info(p_dict["id"])
-                    if info:
-                        p_dict["ram_usage"] = round(info["memory_mb"], 1)
-                        p_dict["cpu_usage"] = round(info["cpu_percent"], 1)
-                projects_list.append(p_dict)
-            self.send_json(projects_list)
-            return
-
-        self.send_response(404)
-        self.end_headers()
-
-    def do_POST(self):
-        session = self.check_auth()
-        if not session:
-            self.send_json({"error": "Unauthorized session"}, 401)
-            return
-            
-        parsed_url = urllib.parse.urlparse(self.path)
-        path = parsed_url.path
-        
-        # Read request body
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else "{}"
-        
-        try:
-            payload = json.loads(body) if body else {}
-        except Exception:
-            payload = {}
-
-        # 🚀 API BIND: NEW DRAG & DROP / WEB PORTAL CODE DEPLOYER
-        if path == "/api/project/deploy":
-            proj_name = payload.get("project_name")
-            filename = payload.get("filename")
-            base64_data = payload.get("file_data") # Base64 payload prevents tricky browser multipart boundaries crashes
-            
-            if not proj_name or not filename or not base64_data:
-                self.send_json({"error": "Missing parameters"}, 400)
-                return
-                
-            clean_proj_name = re.sub(r'[^a-zA-Z0-9_-]', '', proj_name)
-            try:
-                # Resolve package data write files safely
-                file_bytes = base64.b64decode(base64_data)
-                extract_dir = os.path.join(TEMP_DIR, f"web_{session['user_id']}_{clean_proj_name}")
-                if os.path.exists(extract_dir):
-                    shutil.rmtree(extract_dir, ignore_errors=True)
-                os.makedirs(extract_dir, exist_ok=True)
-                
-                is_zip = filename.lower().endswith('.zip')
-                main_file = None
-                
-                if is_zip:
-                    zip_path = os.path.join(TEMP_DIR, f"web_{clean_proj_name}.zip")
-                    with open(zip_path, "wb") as f:
-                        f.write(file_bytes)
-                    with zipfile.ZipFile(zip_path, 'r') as zf:
-                        zf.extractall(extract_dir)
-                    os.remove(zip_path)
-                    
-                    main_file = find_main_file(extract_dir)
-                    if not main_file:
-                        shutil.rmtree(extract_dir, ignore_errors=True)
-                        self.send_json({"error": "Launcher entrypoint file not detected"}, 400)
-                        return
-                else:
-                    file_path = os.path.join(extract_dir, filename)
-                    with open(file_path, "wb") as f:
-                        f.write(file_bytes)
-                    main_file = filename
-                    
-                    # Scaffolding configuration setups
-                    _, ext = os.path.splitext(filename)
-                    if ext.lower() == '.py':
-                        with open(os.path.join(extract_dir, "requirements.txt"), "w") as f:
-                            f.write("# Auto-generated\n")
-                    elif ext.lower() in ('.js', '.ts'):
-                        p_json_content = {
-                            "name": clean_proj_name.lower(),
-                            "version": "1.0.0",
-                            "main": filename,
-                            "dependencies": {}
-                        }
-                        with open(os.path.join(extract_dir, "package.json"), "w") as f:
-                            json.dump(p_json_content, f, indent=2)
-                            
-                types = detect_project_type(extract_dir, main_file)
-                dest_dir = project_folder(session["user_id"], clean_proj_name)
-                
-                if os.path.exists(dest_dir):
-                    shutil.rmtree(dest_dir, ignore_errors=True)
-                    
-                shutil.move(extract_dir, dest_dir)
-                create_sandbox_environment(dest_dir)
-                
-                framework = "Unknown"
-                port = None
-                
-                if main_file.endswith('.py'):
-                    framework = "Python"
-                    if any(x in types for x in ["flask", "fastapi", "django"]):
-                        port = find_available_port()
-                elif main_file.endswith(('.js', '.ts')):
-                    framework = "Node.js"
-                    if any(x in types for x in ["express", "nodejs"]):
-                        port = find_available_port()
-                elif main_file.endswith('.php'):
-                    framework = "PHP"
-                    port = find_available_port()
-                elif main_file.endswith(('.html', '.htm')):
-                    framework = "Static HTML"
-                    port = find_available_port()
-
-                with get_db_connection() as conn:
-                    existing = conn.execute("SELECT id FROM projects WHERE project_name = ?", (clean_proj_name,)).fetchone()
-                    if existing:
-                        project_id = existing['id']
-                        stop_process(project_id)
-                        conn.execute("""
-                            UPDATE projects 
-                            SET main_file = ?, framework = ?, project_type = ?, port = ?, deps_installed = 0
-                            WHERE id = ?
-                        """, (main_file, framework, ','.join(types), port, project_id))
-                    else:
-                        cursor = conn.execute("""
-                            INSERT INTO projects (user_id, project_name, main_file, framework, project_type, port, deps_installed)
-                            VALUES (?, ?, ?, ?, ?, ?, 0)
-                        """, (session["user_id"], clean_proj_name, main_file, framework, ','.join(types), port))
-                        project_id = cursor.lastrowid
-                    conn.commit()
-                    
-                # Safe operational spawn worker running in standard executor logs
-                threading.Thread(
-                    target=start_project_worker,
-                    args=(project_id, None, None, None, None),
-                    daemon=True
-                ).start()
-                
-                self.send_json({"success": True, "message": f"Successfully hosted workspace '{clean_proj_name}'!"})
-                return
-            except Exception as e:
-                self.send_json({"error": f"Build crash: {e}"}, 500)
-                return
-
-        # Project running configurations controls (START/STOP/REBUILD/PURGE)
-        if path == "/api/project/control":
-            p_id = payload.get("project_id")
-            action = payload.get("action")
-            
-            with get_db_connection() as conn:
-                p_row = conn.execute("SELECT * FROM projects WHERE id = ?", (p_id,)).fetchone()
-            if not p_row:
-                self.send_json({"error": "Project not found"}, 404)
-                return
-                
-            p_dict = dict(p_row)
-            if not is_admin(session["user_id"]) and p_dict["user_id"] != session["user_id"]:
-                self.send_json({"error": "Unauthorized process clearance"}, 403)
-                return
-                
-            if action == "start":
-                if is_running(p_id):
-                    self.send_json({"success": True, "message": "Service is already running."})
-                    return
-                threading.Thread(
-                    target=start_project_worker,
-                    args=(p_id, None, None, None, None),
-                    daemon=True
-                ).start()
-                self.send_json({"success": True, "message": "Service startup signal dispatched."})
-                return
-                
-            elif action == "stop":
-                stop_process(p_id)
-                self.send_json({"success": True, "message": "Service stopped successfully."})
-                return
-                
-            elif action == "build":
-                stop_process(p_id)
-                with get_db_connection() as conn:
-                    conn.execute("UPDATE projects SET deps_installed = 0 WHERE id = ?", (p_id,))
-                    conn.commit()
-                threading.Thread(
-                    target=start_project_worker,
-                    args=(p_id, None, None, None, None),
-                    daemon=True
-                ).start()
-                self.send_json({"success": True, "message": "Workspace cleanup and rebuild triggered."})
-                return
-                
-            elif action == "purge":
-                stop_process(p_id)
-                p_path = project_folder(p_dict['user_id'], p_dict['project_name'])
-                shutil.rmtree(p_path, ignore_errors=True)
-                log_file = os.path.join(LOG_DIR, f"project_{p_id}.txt")
-                if os.path.exists(log_file): os.remove(log_file)
-                
-                with get_db_connection() as conn:
-                    conn.execute("DELETE FROM projects WHERE id = ?", (p_id,))
-                    conn.execute("DELETE FROM process_monitoring WHERE project_id = ?", (p_id,))
-                    conn.commit()
-                self.send_json({"success": True, "message": "Workspace purged fully."})
-                return
-
-        # Read specific project logs
-        if path == "/api/project/logs":
-            p_id = payload.get("project_id")
-            log_file = os.path.join(LOG_DIR, f"project_{p_id}.txt")
-            if os.path.exists(log_file):
-                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
-                    logs_data = f.read()[-6000:]
-                self.send_json({"logs": logs_data})
-            else:
-                self.send_json({"logs": "Log manifest is empty. Start your service to load output streams."})
-            return
-
-        # Save environmental configuration variables
-        if path == "/api/project/env":
-            p_id = payload.get("project_id")
-            env_data = payload.get("env_vars")
-            
-            with get_db_connection() as conn:
-                conn.execute("UPDATE projects SET env_vars = ? WHERE id = ?", (json.dumps(env_data), p_id))
-                conn.commit()
-            self.send_json({"success": True, "message": "Environment settings mapped. Restart service to apply."})
-            return
-
-        # Install Package inside project container context
-        if path == "/api/project/pkg/install":
-            p_id = payload.get("project_id")
-            target_pkg = payload.get("package")
-            
-            with get_db_connection() as conn:
-                p_row = conn.execute("SELECT * FROM projects WHERE id = ?", (p_id,)).fetchone()
-            if not p_row:
-                self.send_json({"error": "Project details lost"}, 404)
-                return
-                
-            proj = dict(p_row)
-            p_dir = project_folder(proj['user_id'], proj['project_name'])
-            framework = proj['framework']
-            
-            try:
-                if framework == "Python":
-                    cmd = [sys.executable, "-m", "pip", "install", target_pkg]
-                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                    if res.returncode == 0:
-                        req_file = os.path.join(p_dir, "requirements.txt")
-                        base_pkg = re.split(r'==|>=|<=|~=|<|>', target_pkg)[0].strip()
-                        lines = []
-                        if os.path.exists(req_file):
-                            with open(req_file, "r") as r: lines = r.readlines()
-                        new_lines = [l for l in lines if not l.strip() or l.strip().startswith('#') or re.split(r'==|>=|<=|~=|<|>', l.strip())[0].strip().lower() != base_pkg.lower()]
-                        new_lines.append(f"{target_pkg}\n")
-                        with open(req_file, "w") as w: w.writelines(new_lines)
-                        self.send_json({"success": True, "message": f"Successfully installed and locked {target_pkg}."})
-                    else:
-                        self.send_json({"error": res.stderr or res.stdout}, 400)
-                elif framework == "Node.js":
-                    cmd = ["npm", "install", target_pkg, "--save"]
-                    res = subprocess.run(cmd, cwd=p_dir, capture_output=True, text=True, timeout=120)
-                    if res.returncode == 0:
-                        self.send_json({"success": True, "message": f"Successfully installed npm package {target_pkg}."})
-                    else:
-                        self.send_json({"error": res.stderr or res.stdout}, 400)
-                else:
-                    self.send_json({"error": "Package locks only available for Python/Node.js"}, 400)
-            except Exception as e:
-                self.send_json({"error": str(e)}, 500)
-            return
-
-        # Uninstall Package inside project container context
-        if path == "/api/project/pkg/uninstall":
-            p_id = payload.get("project_id")
-            target_pkg = payload.get("package")
-            
-            with get_db_connection() as conn:
-                p_row = conn.execute("SELECT * FROM projects WHERE id = ?", (p_id,)).fetchone()
-            if not p_row:
-                self.send_json({"error": "Project not found"}, 404)
-                return
-                
-            proj = dict(p_row)
-            p_dir = project_folder(proj['user_id'], proj['project_name'])
-            framework = proj['framework']
-            
-            try:
-                if framework == "Python":
-                    cmd = [sys.executable, "-m", "pip", "uninstall", "-y", target_pkg]
-                    subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                    req_file = os.path.join(p_dir, "requirements.txt")
-                    if os.path.exists(req_file):
-                        with open(req_file, "r") as r: lines = r.readlines()
-                        new_lines = [l for l in lines if not l.strip() or l.strip().startswith('#') or re.split(r'==|>=|<=|~=|<|>', l.strip())[0].strip().lower() != target_pkg.lower()]
-                        with open(req_file, "w") as w: w.writelines(new_lines)
-                    self.send_json({"success": True, "message": f"Successfully removed {target_pkg}."})
-                elif framework == "Node.js":
-                    cmd = ["npm", "uninstall", target_pkg, "--save"]
-                    res = subprocess.run(cmd, cwd=p_dir, capture_output=True, text=True, timeout=120)
-                    if res.returncode == 0:
-                        self.send_json({"success": True, "message": f"Removed npm package {target_pkg}."})
-                    else:
-                        self.send_json({"error": res.stderr or res.stdout}, 400)
-                else:
-                    self.send_json({"error": "Package controllers unavailable on static frameworks"}, 400)
-            except Exception as e:
-                self.send_json({"error": str(e)}, 500)
-            return
-
-        # CLI terminal executing scoped workspace commands
-        if path == "/api/project/cli":
-            p_id = payload.get("project_id")
-            command = payload.get("command")
-            
-            with get_db_connection() as conn:
-                proj = conn.execute("SELECT * FROM projects WHERE id = ?", (p_id,)).fetchone()
-            if not proj:
-                self.send_json({"error": "Project details unavailable"}, 404)
-                return
-                
-            proj = dict(proj)
-            if not is_admin(session["user_id"]) and proj["user_id"] != session["user_id"]:
-                self.send_json({"error": "Admin access constraints active"}, 403)
-                return
-                
-            p_dir = project_folder(proj['user_id'], proj['project_name'])
-            
-            env = os.environ.copy()
-            try:
-                user_env = json.loads(proj.get('env_vars', '{}'))
-                for k, v in user_env.items(): env[str(k)] = str(v)
-            except: pass
-            
-            try:
-                res = subprocess.run(
-                    command,
-                    shell=True,
-                    cwd=p_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=25,
-                    env=env
-                )
-                self.send_json({
-                    "code": res.returncode,
-                    "stdout": res.stdout,
-                    "stderr": res.stderr
-                })
-            except Exception as e:
-                self.send_json({"error": str(e)}, 500)
-            return
-
-        # Interactive Global VPS security command executor (MAIN VPS BASH SHELL)
-        if path == "/api/system/cmd":
-            if not is_admin(session["user_id"]):
-                self.send_json({"error": "Admin permission required"}, 403)
-                return
-            command = payload.get("command")
-            res = execute_vps_shell(command, timeout=20)
-            self.send_json(res)
-            return
-
-        # Active host process scanning tree lists
-        if path == "/api/system/processes":
-            if not is_admin(session["user_id"]):
-                self.send_json({"error": "Admin permission required"}, 403)
-                return
-            discovered = scan_vps_for_foreign_services()
-            self.send_json(discovered)
-            return
-
-        # Terminate hostile process PID
-        if path == "/api/system/process/kill":
-            if not is_admin(session["user_id"]):
-                self.send_json({"error": "Admin permission required"}, 403)
-                return
-            target_pid = int(payload.get("pid", 0))
-            try:
-                parent = psutil.Process(target_pid)
-                parent.kill()
-                self.send_json({"success": True, "message": f"Successfully killed PID {target_pid}."})
-            except Exception as e:
-                self.send_json({"error": str(e)}, 500)
-            return
-
-        # Manage external systemd unit state
-        if path == "/api/system/systemd":
-            if not is_admin(session["user_id"]):
-                self.send_json({"error": "Admin permission required"}, 403)
-                return
-            service = payload.get("service")
-            action = payload.get("action")
-            ok, response = manage_systemd_unit(service, action)
-            self.send_json({"success": ok, "output": response})
-            return
-
-        self.send_response(404)
-        self.end_headers()
-
-    def get_spa_html(self, session):
-        """Construct stunning dark-themed high-fidelity HTML controller panel served from RAM"""
-        return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VPS Cloud Orchestrator Panel</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body {{
-            font-family: 'Inter', sans-serif;
-            background-color: #0b0f19;
-            color: #f3f4f6;
-            overflow-x: hidden;
-        }}
-        .monospace {{
-            font-family: 'Fira Code', monospace;
-        }}
-        ::-webkit-scrollbar {{
-            width: 6px;
-            height: 6px;
-        }}
-        ::-webkit-scrollbar-track {{
-            background: #0f172a;
-        }}
-        ::-webkit-scrollbar-thumb {{
-            background: #1e293b;
-            border-radius: 4px;
-        }}
-        ::-webkit-scrollbar-thumb:hover {{
-            background: #334155;
-        }}
-    </style>
-</head>
-<body class="flex flex-col min-h-screen">
-    <!-- Main Top Navigation Panel Header -->
-    <header class="bg-[#111827] border-b border-[#1f2937] px-6 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
-        <div class="flex items-center gap-3">
-            <span class="text-3xl">😈</span>
-            <div>
-                <h1 class="text-xl font-bold tracking-tight bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">VPS Orchestrator Console</h1>
-                <p class="text-xs text-[#9ca3af]">Enterprise Virtualization Service Controller</p>
-            </div>
-        </div>
-        <div class="flex items-center gap-4 flex-wrap justify-center">
-            <span class="text-xs px-3 py-1 bg-green-500/10 text-green-400 border border-green-500/20 rounded-full font-medium">🌍 VPS IP: {VPS_PUBLIC_IP}</span>
-            <span class="text-xs px-3 py-1 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-full font-medium">👤 User: @{session["username"]}</span>
-            <button onclick="logoutSession()" class="text-xs px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 transition rounded-full border border-red-500/30">🚪 Logout</button>
-        </div>
-    </header>
-
-    <div class="flex-1 flex flex-col md:flex-row">
-        <!-- Responsive Left Sidebar Navigation Links Dock -->
-        <aside class="w-full md:w-64 bg-[#111827] border-r border-[#1f2937] p-4 space-y-2 flex-shrink-0">
-            <button onclick="switchTab('dashboard')" id="btn-tab-dashboard" class="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold rounded-xl bg-[#1f293d] text-white transition">
-                📊 Infrastructure Status
-            </button>
-            <button onclick="switchTab('workspaces')" id="btn-tab-workspaces" class="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold rounded-xl hover:bg-[#1f293d]/50 text-[#9ca3af] hover:text-white transition">
-                📦 Code Workspaces
-            </button>
-            <button onclick="switchTab('vps-controls')" id="btn-tab-vps-controls" class="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold rounded-xl hover:bg-[#1f293d]/50 text-[#9ca3af] hover:text-white transition">
-                🖥️ System Daemon CLI
-            </button>
-            <button onclick="switchTab('deploy')" id="btn-tab-deploy" class="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold rounded-xl hover:bg-[#1f293d]/50 text-[#9ca3af] hover:text-white transition">
-                🚀 Deploy Workspace
-            </button>
-        </aside>
-
-        <!-- Dynamic Content Viewing Container Viewports -->
-        <main class="flex-1 p-6 space-y-6 overflow-y-auto">
-            
-            <!-- VIEWPORT 1: INFRASTRUCTURE STATUS -->
-            <section id="viewport-dashboard" class="space-y-6">
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                    <div class="bg-[#111827] border border-[#1f2937] p-5 rounded-2xl flex items-center justify-between">
-                        <div>
-                            <p class="text-xs text-[#9ca3af] uppercase tracking-wider">CPU Core Allocation</p>
-                            <h3 class="text-2xl font-bold monospace mt-1" id="val-cpu">0.0%</h3>
-                        </div>
-                        <div class="text-3xl">🖥️</div>
-                    </div>
-                    <div class="bg-[#111827] border border-[#1f2937] p-5 rounded-2xl flex items-center justify-between">
-                        <div>
-                            <p class="text-xs text-[#9ca3af] uppercase tracking-wider">RAM Allocation RSS</p>
-                            <h3 class="text-2xl font-bold monospace mt-1" id="val-ram">0%</h3>
-                            <p class="text-[10px] text-[#9ca3af]" id="val-ram-mb">0 / 0 MB</p>
-                        </div>
-                        <div class="text-3xl">💾</div>
-                    </div>
-                    <div class="bg-[#111827] border border-[#1f2937] p-5 rounded-2xl flex items-center justify-between">
-                        <div>
-                            <p class="text-xs text-[#9ca3af] uppercase tracking-wider">Storage Usage</p>
-                            <h3 class="text-2xl font-bold monospace mt-1" id="val-disk">0%</h3>
-                            <p class="text-[10px] text-[#9ca3af]" id="val-disk-free">0 GB Free</p>
-                        </div>
-                        <div class="text-3xl">🗄️</div>
-                    </div>
-                    <div class="bg-[#111827] border border-[#1f2937] p-5 rounded-2xl flex items-center justify-between">
-                        <div>
-                            <p class="text-xs text-[#9ca3af] uppercase tracking-wider">Active Daemons</p>
-                            <h3 class="text-2xl font-bold monospace mt-1"><span id="val-active-projs">0</span>/<span id="val-total-projs">0</span></h3>
-                            <p class="text-[10px] text-[#9ca3af]">Uptime: <span id="val-uptime">0</span> Hours</p>
-                        </div>
-                        <div class="text-3xl">⚡</div>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <div class="bg-[#111827] border border-[#1f2937] p-5 rounded-2xl space-y-4">
-                        <h2 class="text-lg font-bold">🎯 Global Live Monitoring</h2>
-                        <div class="h-64 relative">
-                            <canvas id="loadChart"></canvas>
-                        </div>
-                    </div>
-                    <div class="bg-[#111827] border border-[#1f2937] p-5 rounded-2xl space-y-4">
-                        <div class="flex justify-between items-center">
-                            <h2 class="text-lg font-bold">🛠️ active services overview</h2>
-                            <button onclick="fetchProjects()" class="text-xs px-3 py-1.5 bg-[#1f293d] hover:bg-[#2d3748] rounded-xl font-semibold transition">🔄 reload list</button>
-                        </div>
-                        <div class="overflow-y-auto max-h-[16rem] space-y-3" id="dash-project-summaries">
-                            <!-- Injected inside loading logic handlers -->
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- VIEWPORT 2: WORKSPACE PORTFOLIO MANAGER -->
-            <section id="viewport-workspaces" class="space-y-6 hidden">
-                <div class="flex justify-between items-center flex-wrap gap-4">
-                    <div>
-                        <h2 class="text-2xl font-bold text-white">📦 Code Workspaces</h2>
-                        <p class="text-xs text-[#9ca3af]">Manage your running bots, APIs, sandboxes, and ports</p>
-                    </div>
-                    <button onclick="switchTab('deploy')" class="px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-bold text-sm shadow-lg shadow-blue-500/15 transition">🚀 Deploy Workspace</button>
-                </div>
-
-                <div class="grid grid-cols-1 xl:grid-cols-2 gap-6" id="workspaces-cards-container">
-                    <!-- Dynamic project cards go here -->
-                </div>
-            </section>
-
-            <!-- VIEWPORT 3: VPS CONTROLS & BASH SUB-SHELLS -->
-            <section id="viewport-vps-controls" class="space-y-6 hidden">
-                <div>
-                    <h2 class="text-2xl font-bold text-white">🖥️ System Daemon CLI</h2>
-                    <p class="text-xs text-[#9ca3af]">Direct bash controls, systemd units, and memory process management</p>
-                </div>
-
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <!-- Left: Monospace Terminal Shell -->
-                    <div class="bg-[#111827] border border-[#1f2937] rounded-2xl p-5 flex flex-col h-[32rem]">
-                        <h3 class="text-sm font-bold text-[#38bdf8] uppercase tracking-wider mb-3">💻 Host VPS Terminal (Bash Shell)</h3>
-                        <div id="vps-cli-output" class="flex-1 bg-[#05070c] rounded-xl p-4 overflow-y-auto monospace text-xs text-[#10b981] space-y-2 mb-3">
-                            <p class="text-[#9ca3af]"># Safe VPS Orchestrator Terminal Loaded.</p>
-                        </div>
-                        <div class="flex gap-2">
-                            <input type="text" id="vps-cli-input" placeholder="Type bash command (e.g. df -h, free -m) and hit enter..." class="flex-1 bg-[#1f293d] border border-[#2d3748] rounded-xl px-4 py-2 text-xs monospace text-white focus:outline-none focus:border-[#38bdf8]" onkeydown="handleVpsCommand(event)">
-                            <button onclick="sendVpsCommand()" class="px-4 py-2 bg-[#38bdf8] hover:bg-[#0ea5e9] text-black font-bold text-xs rounded-xl transition">Run</button>
-                        </div>
-                    </div>
-
-                    <!-- Right: Foreign system processes scanner & Systemd units -->
-                    <div class="bg-[#111827] border border-[#1f2937] rounded-2xl p-5 flex flex-col h-[32rem]">
-                        <div class="flex justify-between items-center mb-3">
-                            <h3 class="text-sm font-bold text-yellow-400 uppercase tracking-wider">🔍 Alien Process supervisor</h3>
-                            <button onclick="scanVPSProcesses()" class="text-xs px-2.5 py-1 bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 rounded-lg transition border border-yellow-500/20">🔄 Scan RAM</button>
-                        </div>
-                        <div id="vps-processes-list" class="flex-1 bg-[#161c2a] rounded-xl p-4 overflow-y-auto space-y-3">
-                            <p class="text-xs text-[#9ca3af] text-center py-8">Execute scanner to locate active external processes or foreign web servers on VPS.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- VIEWPORT 4: DEPLOY HUB -->
-            <section id="viewport-deploy" class="space-y-6 hidden">
-                <div class="max-w-xl mx-auto bg-[#111827] border border-[#1f2937] rounded-2xl p-6 space-y-5">
-                    <div class="text-center">
-                        <span class="text-5xl">🚀</span>
-                        <h2 class="text-xl font-bold mt-2">Deploy New Workspace</h2>
-                        <p class="text-xs text-[#9ca3af] mt-1">Deploy Python, Node.js, PHP CLI tasks or static HTML websites instantly</p>
-                    </div>
-
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-xs text-[#9ca3af] uppercase tracking-wider font-semibold mb-1">Project Identifier Name</label>
-                            <input type="text" id="dep-name" placeholder="e.g. MyAwesomeAPI" class="w-full bg-[#1f293d] border border-[#2d3748] rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500 text-white">
-                        </div>
-
-                        <div>
-                            <label class="block text-xs text-[#9ca3af] uppercase tracking-wider font-semibold mb-1">Target ZIP Archive or Code script</label>
-                            <div class="border-2 border-dashed border-[#2d3748] hover:border-blue-500 transition rounded-xl p-6 text-center cursor-pointer relative" id="drop-zone">
-                                <input type="file" id="dep-file" class="absolute inset-0 opacity-0 cursor-pointer" onchange="handleFileSelect(event)">
-                                <span class="text-3xl">📤</span>
-                                <p class="text-xs text-[#9ca3af] mt-1" id="file-label-text">Drag & drop your code .zip or script file (.py, .js, .php, .html) here, or click to browse</p>
-                            </div>
-                        </div>
-
-                        <button onclick="deployProject()" class="w-full py-3 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl text-white font-bold text-sm tracking-wide shadow-lg shadow-blue-500/15 transition">DEPLOY TO HOST SANDBOX</button>
-                    </div>
-                </div>
-            </section>
-        </main>
-    </div>
-
-    <!-- MODAL 1: ENVIRONMENT VARIABLES CONFIGURATOR -->
-    <div id="modal-env" class="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 hidden">
-        <div class="max-w-md w-full bg-[#111827] border border-[#1f2937] rounded-2xl p-6 space-y-4 shadow-2xl">
-            <div class="flex justify-between items-center">
-                <h3 class="text-md font-bold text-white">⚙️ Environment Variables Configurator</h3>
-                <button onclick="closeModal('env')" class="text-[#9ca3af] hover:text-white text-lg">✕</button>
-            </div>
-            <p class="text-xs text-[#9ca3af]">Define credentials, secrets, or API configurations in valid JSON format:</p>
-            <textarea id="modal-env-json" rows="8" class="w-full bg-[#161c2a] border border-[#1f2937] rounded-xl p-3 text-xs monospace focus:outline-none focus:border-[#38bdf8] text-[#10b981]" placeholder='{{"BOT_TOKEN": "123456:AABB...", "PORT": "8080"}}'></textarea>
-            <div class="flex justify-end gap-3 text-xs">
-                <button onclick="closeModal('env')" class="px-4 py-2 bg-[#1f293d] hover:bg-[#2d3748] rounded-xl font-bold transition">Cancel</button>
-                <button onclick="saveProjectEnv()" class="px-4 py-2 bg-[#38bdf8] hover:bg-[#0ea5e9] text-black font-bold rounded-xl transition">Save Variables</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- MODAL 2: PACKAGE MANAGER OVERLAY -->
-    <div id="modal-pkg" class="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 hidden">
-        <div class="max-w-md w-full bg-[#111827] border border-[#1f2937] rounded-2xl p-6 space-y-4 shadow-2xl">
-            <div class="flex justify-between items-center">
-                <h3 class="text-md font-bold text-white">📦 Package Manifest Manager</h3>
-                <button onclick="closeModal('pkg')" class="text-[#9ca3af] hover:text-white text-lg">✕</button>
-            </div>
-            <div class="space-y-3">
-                <div class="flex gap-2">
-                    <input type="text" id="modal-pkg-name" placeholder="package_name==version (Python) or package@version (Node.js)" class="flex-1 bg-[#1f293d] border border-[#2d3748] rounded-xl px-4 py-2 text-xs focus:outline-none focus:border-[#38bdf8] text-white">
-                    <button onclick="installPackage()" class="px-4 py-2 bg-[#38bdf8] hover:bg-[#0ea5e9] text-black font-bold text-xs rounded-xl transition">Install</button>
-                </div>
-                <div class="flex gap-2">
-                    <input type="text" id="modal-pkg-del-name" placeholder="Package name to uninstall" class="flex-1 bg-[#1f293d] border border-[#2d3748] rounded-xl px-4 py-2 text-xs focus:outline-none focus:border-red-500 text-white">
-                    <button onclick="uninstallPackage()" class="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 font-bold text-xs rounded-xl transition">Uninstall</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- MODAL 3: WORKSPACE CLI CONSOLE TERMINAL -->
-    <div id="modal-cli" class="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 hidden">
-        <div class="max-w-2xl w-full bg-[#111827] border border-[#1f2937] rounded-2xl p-5 flex flex-col h-[30rem] shadow-2xl">
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="text-md font-bold text-white flex items-center gap-2">💻 Workspace Container CLI</h3>
-                <button onclick="closeModal('cli')" class="text-[#9ca3af] hover:text-white text-lg">✕</button>
-            </div>
-            <div id="modal-cli-output" class="flex-1 bg-[#05070c] rounded-xl p-4 overflow-y-auto monospace text-xs text-[#10b981] space-y-2 mb-3">
-                <p class="text-[#9ca3af] monospace">// CLI subshell established inside project target folder</p>
-            </div>
-            <div class="flex gap-2">
-                <input type="text" id="modal-cli-input" placeholder="Type workspace command (e.g. ls -la, npm run build) and hit enter..." class="flex-1 bg-[#1f293d] border border-[#2d3748] rounded-xl px-4 py-2 text-xs monospace text-white focus:outline-none focus:border-[#38bdf8]" onkeydown="handleModalCliCommand(event)">
-                <button onclick="sendModalCliCommand()" class="px-4 py-2 bg-[#38bdf8] hover:bg-[#0ea5e9] text-black font-bold text-xs rounded-xl transition">Run</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- MODAL 4: RUNNER LIVE LOGS STREAMS -->
-    <div id="modal-logs" class="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 hidden">
-        <div class="max-w-3xl w-full bg-[#111827] border border-[#1f2937] rounded-2xl p-5 flex flex-col h-[32rem] shadow-2xl">
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="text-md font-bold text-white flex items-center gap-2">📋 Sandbox Active Runner Logs</h3>
-                <div class="flex gap-2">
-                    <button onclick="fetchActiveLogs()" class="text-xs px-2.5 py-1 bg-[#1f293d] hover:bg-[#2d3748] rounded-lg transition text-[#9ca3af]">🔄 Refresh</button>
-                    <button onclick="closeModal('logs')" class="text-[#9ca3af] hover:text-white text-lg">✕</button>
-                </div>
-            </div>
-            <pre id="modal-logs-output" class="flex-1 bg-[#05070c] rounded-xl p-4 overflow-y-auto monospace text-xs text-[#9ca3af] whitespace-pre-wrap mb-2 border border-[#1f2937]">Loading stdout streams...</pre>
-        </div>
-    </div>
-
-    <!-- JAVASCRIPT LOGIC CONTROLLERS FOR DATA BINDINGS -->
-    <script>
-        let currentTab = 'dashboard';
-        let projects = [];
-        let systemStats = {{}};
-        let activeModalProjectId = null;
-        let selectedFileBase64 = null;
-        let selectedFileName = null;
-        let loadChartInstance = null;
-        let cpuHistory = Array(20).fill(0);
-        let memHistory = Array(20).fill(0);
-        let chartLabels = Array(20).fill('');
-
-        // Periodic diagnostic monitoring loops
-        window.onload = function() {{
-            initializeChart();
-            fetchStats();
-            fetchProjects();
-            setInterval(fetchStats, 3000);
-            setInterval(fetchProjects, 4000);
-        }};
-
-        function switchTab(tabId) {{
-            document.querySelectorAll('main > section').forEach(el => el.classList.add('hidden'));
-            document.getElementById(`viewport-${{tabId}}`).classList.remove('hidden');
-            
-            // Toggle sidebar button styles
-            document.querySelectorAll('aside > button').forEach(el => {{
-                el.classList.remove('bg-[#1f293d]', 'text-white');
-                el.classList.add('hover:bg-[#1f293d]/50', 'text-[#9ca3af]');
-            }});
-            const activeBtn = document.getElementById(`btn-tab-${{tabId}}`);
-            if (activeBtn) {{
-                activeBtn.classList.add('bg-[#1f293d]', 'text-white');
-                activeBtn.classList.remove('hover:bg-[#1f293d]/50', 'text-[#9ca3af]');
-            }}
-            currentTab = tabId;
-        }}
-
-        function fetchStats() {{
-            fetch('/api/stats')
-                .then(r => r.json())
-                .then(data => {{
-                    systemStats = data;
-                    document.getElementById('val-cpu').innerText = `${{data.cpu}}%`;
-                    document.getElementById('val-ram').innerText = `${{data.memory}}%`;
-                    document.getElementById('val-ram-mb').innerText = `${{data.memory_mb_used}} / ${{data.memory_mb_total}} MB`;
-                    document.getElementById('val-disk').innerText = `${{data.disk}}%`;
-                    document.getElementById('val-disk-free').innerText = `${{data.disk_gb_free}} GB Free`;
-                    document.getElementById('val-total-projs').innerText = data.total_projects;
-                    document.getElementById('val-active-projs').innerText = data.running_projects;
-                    document.getElementById('val-uptime').innerText = data.uptime_hours;
-
-                    // Update live monitoring chart records
-                    updateChart(data.cpu, data.memory);
-                }});
-        }}
-
-        function initializeChart() {{
-            const ctx = document.getElementById('loadChart').getContext('2d');
-            loadChartInstance = new Chart(ctx, {{
-                type: 'line',
-                data: {{
-                    labels: chartLabels,
-                    datasets: [
-                        {{
-                            label: 'CPU Load %',
-                            data: cpuHistory,
-                            borderColor: '#38bdf8',
-                            backgroundColor: 'rgba(56, 189, 248, 0.05)',
-                            tension: 0.3,
-                            borderWidth: 2,
-                            fill: true
-                        }},
-                        {{
-                            label: 'RAM Allocation %',
-                            data: memHistory,
-                            borderColor: '#10b981',
-                            backgroundColor: 'rgba(16, 185, 129, 0.05)',
-                            tension: 0.3,
-                            borderWidth: 2,
-                            fill: true
-                        }}
-                    ]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {{ legend: {{ labels: {{ color: '#9ca3af', font: {{ family: 'Inter' }} }} }} }},
-                    scales: {{
-                        y: {{ min: 0, max: 100, grid: {{ color: '#1f2937' }}, ticks: {{ color: '#9ca3af' }} }},
-                        x: {{ grid: {{ display: false }}, ticks: {{ display: false }} }}
-                    }}
-                }}
-            }});
-        }}
-
-        function updateChart(cpu, mem) {{
-            if (!loadChartInstance) return;
-            cpuHistory.shift();
-            cpuHistory.push(cpu);
-            memHistory.shift();
-            memHistory.push(mem);
-            loadChartInstance.update();
-        }}
-
-        function fetchProjects() {{
-            fetch('/api/projects')
-                .then(r => r.json())
-                .then(data => {{
-                    projects = data;
-                    renderProjectSummaries();
-                    if (currentTab === 'workspaces') {{
-                        renderWorkspaces();
-                    }}
-                }});
-        }}
-
-        function renderProjectSummaries() {{
-            const container = document.getElementById('dash-project-summaries');
-            container.innerHTML = '';
-            if (projects.length === 0) {{
-                container.innerHTML = '<p class="text-xs text-[#9ca3af] text-center py-6">No deployed workspaces currently available.</p>';
-                return;
-            }}
-            projects.forEach(p => {{
-                const statusBadge = p.running 
-                    ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 border border-green-500/20">Active</span>'
-                    : '<span class="text-[10px] px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">Offline</span>';
-                
-                const portText = p.port ? `<span class="text-xs text-[#38bdf8] monospace">:${{p.port}}</span>` : '';
-
-                const el = document.createElement('div');
-                el.className = "flex justify-between items-center p-3 bg-[#161c2a] rounded-xl border border-[#1f2937]";
-                el.innerHTML = `
-                    <div>
-                        <h4 class="text-sm font-semibold text-white flex items-center gap-1.5">${{p.project_name}} ${{portText}}</h4>
-                        <p class="text-[10px] text-[#9ca3af]">${{p.framework}} • entry: ${{p.main_file}}</p>
-                    </div>
-                    <div>${{statusBadge}}</div>
-                `;
-                container.appendChild(el);
-            }});
-        }}
-
-        function renderWorkspaces() {{
-            const container = document.getElementById('workspaces-cards-container');
-            container.innerHTML = '';
-            projects.forEach(p => {{
-                const statusClass = p.running ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'bg-red-500/10 border-red-500/20 text-red-400';
-                const statusLabel = p.running ? 'Active (Running)' : 'Offline (Stopped)';
-                const btnStateLabel = p.running ? '⏹️ STOP WORKER' : '▶️ BOOT WORKER';
-                
-                const apiLink = p.port 
-                    ? `<div class="bg-[#161c2a] border border-[#1f2937] p-3 rounded-xl flex items-center justify-between text-xs mt-3">
-                         <span class="text-[#9ca3af]">🌐 Live Endpoint:</span>
-                         <a href="http://${{systemStats.vps_ip || 'localhost'}}:${{p.port}}" target="_blank" class="text-cyan-400 hover:underline monospace font-medium">http://${{systemStats.vps_ip || 'localhost'}}:${{p.port}}</a>
-                       </div>`
-                    : '';
-
-                const resourceUsage = p.running
-                    ? `<div class="grid grid-cols-2 gap-3 text-xs border-t border-[#1f2937]/50 pt-3 mt-3">
-                         <div>
-                            <span class="text-[#9ca3af]">CPU Allocation:</span>
-                            <span class="text-white monospace ml-1 font-bold">${{p.cpu_usage || 0}}%</span>
-                         </div>
-                         <div>
-                            <span class="text-[#9ca3af]">Memory RSS:</span>
-                            <span class="text-white monospace ml-1 font-bold">${{p.ram_usage || 0}} MB</span>
-                         </div>
-                       </div>`
-                    : '';
-
-                const el = document.createElement('div');
-                el.className = "bg-[#111827] border border-[#1f2937] rounded-2xl p-5 space-y-4 shadow-xl";
-                el.innerHTML = `
-                    <div class="flex justify-between items-start flex-wrap gap-2">
-                        <div>
-                            <h3 class="text-lg font-bold text-white flex items-center gap-2">${{p.project_name}} <span class="text-[10px] uppercase font-semibold text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded">${{p.framework}}</span></h3>
-                            <p class="text-xs text-[#9ca3af]">Sandbox ID: <code>${{p.id}}</code> | Main Executable: <code>${{p.main_file}}</code></p>
-                        </div>
-                        <span class="text-xs px-3 py-1.5 rounded-full border ${{statusClass}} font-semibold">${{statusLabel}}</span>
-                    </div>
-
-                    ${{apiLink}}
-                    ${{resourceUsage}}
-
-                    <div class="border-t border-[#1f2937]/50 pt-4 flex flex-wrap gap-2 text-xs font-semibold">
-                        <button onclick="triggerControl(${{p.id}}, '${{p.running ? 'stop' : 'start'}}')" class="px-3.5 py-2 bg-[#1f293d] hover:bg-[#2d3748] rounded-xl transition flex-1 text-center min-w-[7rem]">${{btnStateLabel}}</button>
-                        <button onclick="openModal('env', ${{p.id}})" class="px-3.5 py-2 bg-[#1f293d] hover:bg-[#2d3748] rounded-xl transition">⚙️ Config Env</button>
-                        <button onclick="openModal('pkg', ${{p.id}})" class="px-3.5 py-2 bg-[#1f293d] hover:bg-[#2d3748] rounded-xl transition">📦 Packages</button>
-                        <button onclick="openModal('cli', ${{p.id}})" class="px-3.5 py-2 bg-[#1f293d] hover:bg-[#2d3748] rounded-xl transition">💻 CLI Shell</button>
-                        <button onclick="openModal('logs', ${{p.id}})" class="px-3.5 py-2 bg-[#1f293d] hover:bg-[#2d3748
+if __name__ == "__main__":
+    main()
